@@ -1,0 +1,9 @@
+percona-pg-telemetry (1.2.0) unstable; urgency=low
+  * Update to 1.2.0 version
+ -- Ricardo Dias <ricardo.dias@percona.com>  Fri, 13 Feb 2026 15:58:00 +0000
+
+percona-pg-telemetry (1.0.0-1) unstable; urgency=medium
+
+  * Initial build.
+
+ -- Surabhi Bhat <surabhi.bhat@percona.com>  Fri, 26 Apr 2024 19:20:11 +0100
