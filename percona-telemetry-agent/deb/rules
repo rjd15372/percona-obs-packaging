@@ -1,0 +1,74 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+# Sample debian/rules that uses debhelper.
+# This file was originally written by Joey Hess and Craig Small.
+# As a special exception, when this file is copied by dh-make into a
+# dh-make output file, you may use that output file without restriction.
+# This special exception was added by Craig Small in version 0.37 of dh-make.
+PHONY: override_dh_auto_build override_dh_auto_install
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+export DH_VERBOSE=1
+
+TMP=$(CURDIR)/debian/tmp/
+
+# Generate VERSION file from .obsinfo if it doesn't exist (OBS builds)
+# In OBS, the .obsinfo is in /usr/src/packages/SOURCES/, not the source tree
+OBS_SOURCES_DIR = /usr/src/packages/SOURCES
+$(shell if [ ! -f VERSION ]; then \
+    _obsinfo=$$(ls $(OBS_SOURCES_DIR)/*.obsinfo 2>/dev/null | head -1); \
+    if [ -n "$${_obsinfo}" ]; then \
+        _commit=$$(grep '^commit:' $${_obsinfo} | awk '{print $$2}'); \
+        _version=$$(grep '^version:' $${_obsinfo} | awk '{print $$2}'); \
+        echo "VERSION=$${_version}" > VERSION; \
+        echo "REVISION=$$(echo $${_commit} | cut -c1-7)" >> VERSION; \
+        echo "GITCOMMIT=$${_commit}" >> VERSION; \
+        echo "GITBRANCH=obs" >> VERSION; \
+        echo "COMPONENT_VERSION=$${_version}" >> VERSION; \
+        echo "TELEMETRY_AGENT_RELEASE_FULLCOMMIT=$${_commit}" >> VERSION; \
+    fi; \
+fi)
+
+export VERSION=$(shell egrep '^VERSION' VERSION | cut -f 2 -d '=')
+export GITBRANCH=$(shell egrep '^GITBRANCH' VERSION | cut -f 2 -d '=')
+export GITCOMMIT=$(shell egrep '^GITCOMMIT' VERSION | cut -f 2 -d '=')
+export COMPONENT_VERSION=$(shell egrep '^COMPONENT_VERSION' VERSION | cut -f 2 -d '=')
+export TELEMETRY_AGENT_RELEASE_FULLCOMMIT=$(shell egrep '^TELEMETRY_AGENT_RELEASE_FULLCOMMIT' VERSION | cut -f 2 -d '=')
+export GOTOOLCHAIN=local
+
+%:
+	dh $@ --with-systemd
+
+override_dh_builddeb:
+	dh_builddeb -- -Zgzip
+
+override_dh_auto_test override_dh_compress override_dh_fixperms override_dh_strip:
+
+override_dh_auto_build:
+	@echo "RULES.$@"
+	if [ ! -d vendor ] && [ -f $(OBS_SOURCES_DIR)/vendor.tar.gz ]; then \
+		tar -xzf $(OBS_SOURCES_DIR)/vendor.tar.gz -C $(CURDIR); \
+	fi
+ifeq ($(DEB_BUILD_ARCH),arm64)
+	make build GOARCH=arm64 COMPONENT_VERSION=${COMPONENT_VERSION} TELEMETRY_AGENT_RELEASE_FULLCOMMIT=${TELEMETRY_AGENT_RELEASE_FULLCOMMIT} VENDOR_BUILD_FLAGS="-mod=vendor"
+else
+	make build GOARCH=amd64 COMPONENT_VERSION=${COMPONENT_VERSION} TELEMETRY_AGENT_RELEASE_FULLCOMMIT=${TELEMETRY_AGENT_RELEASE_FULLCOMMIT} VENDOR_BUILD_FLAGS="-mod=vendor"
+endif
+	touch $@
+
+override_dh_auto_install:
+	@echo "RULES.$@"
+	mkdir -p $(TMP)
+	mkdir -p $(TMP)/default
+	cd bin && cp telemetry-agent $(TMP)/percona-telemetry-agent
+	cp -f packaging/conf/percona-telemetry-agent.env  $(TMP)/default/percona-telemetry-agent
+	cp -f packaging/conf/percona-telemetry-agent.service $(TMP)/percona-telemetry-agent.service
+	cp -f LICENSE $(TMP)/LICENSE
+	ls -la $(TMP)
+
+override_dh_systemd_start:
+	dh_systemd_enable --name=percona-telemetry-agent percona-telemetry-agent.service
+	dh_systemd_start --restart-after-upgrade
+
+override_dh_installlogrotate:
+	dh_installlogrotate --name=percona-telemetry-agent packaging/conf/percona-telemetry-agent.logrotate

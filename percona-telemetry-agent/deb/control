@@ -1,0 +1,11 @@
+Source: percona-telemetry-agent
+Section: utils
+Priority: optional
+Maintainer: Percona LLC
+Homepage: https://percona.com
+Build-Depends: debhelper (>= 9)
+
+Package: percona-telemetry-agent
+Architecture: any
+Depends: logrotate
+Description: Percona Telemetry Agent gathers information and metrics from Percona products installed on the host.
