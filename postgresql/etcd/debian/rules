@@ -7,7 +7,7 @@ export CGO_ENABLED=0
 OBS_SOURCES_DIR = /usr/src/packages/SOURCES
 
 %:
-    dh $@
+	dh $@
 
 override_dh_auto_configure:
 override_dh_auto_test:
@@ -17,24 +17,24 @@ override_dh_compress:
 override_dh_shlibdeps:
 
 override_dh_auto_build:
-    tar -xzf $(OBS_SOURCES_DIR)/vendor-server.tar.gz   -C server/
-    tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdctl.tar.gz  -C etcdctl/
-    tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdutl.tar.gz  -C etcdutl/
-    mkdir -p bin
-    cd server  && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcd .
-    cd etcdctl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdctl .
-    cd etcdutl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdutl .
+	tar -xzf $(OBS_SOURCES_DIR)/vendor-server.tar.gz   -C server/
+	tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdctl.tar.gz  -C etcdctl/
+	tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdutl.tar.gz  -C etcdutl/
+	mkdir -p bin
+	cd server  && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcd .
+	cd etcdctl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdctl .
+	cd etcdutl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdutl .
 
 override_dh_auto_install:
-    mkdir -p debian/etcd-server/usr/bin
-    mkdir -p debian/etcd-client/usr/bin
-    cp bin/etcd    debian/etcd-server/usr/bin/
-    cp bin/etcdctl debian/etcd-client/usr/bin/
-    cp bin/etcdutl debian/etcd-client/usr/bin/
+	mkdir -p debian/etcd-server/usr/bin
+	mkdir -p debian/etcd-client/usr/bin
+	cp bin/etcd    debian/etcd-server/usr/bin/
+	cp bin/etcdctl debian/etcd-client/usr/bin/
+	cp bin/etcdutl debian/etcd-client/usr/bin/
 
 override_dh_installinit:
-    dh_installinit -p etcd-server --name=etcd
+	dh_installinit -p etcd-server --name=etcd
 
 override_dh_installsystemd:
-    dh_installsystemd -p etcd-server --name=etcd
+	dh_installsystemd -p etcd-server --name=etcd
 
