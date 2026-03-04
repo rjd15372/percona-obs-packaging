@@ -8,7 +8,7 @@ Summary: Percona Telemetry Agent
 Group:  Applications/Databases
 License: GPLv3
 URL:  https://github.com/percona/telemetry-agent
-Source: percona-telemetry-agent-%{version}.tar.gz
+Source: percona-telemetry-agent.tar.gz
 Source1: vendor.tar.gz
 
 BuildRequires: golang make git

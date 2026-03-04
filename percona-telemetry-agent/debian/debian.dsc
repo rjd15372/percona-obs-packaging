@@ -4,6 +4,7 @@ Binary: percona-telemetry-agent
 Architecture: any
 Version: 1.0.0
 Debtransform-Release: 1
+Debtransform-Tar: percona-telemetry-agent.tar.gz
 Debtransform-Files-Tar: debian.tar.gz vendor.tar.gz
 Maintainer: Percona LLC
 Build-Depends:
