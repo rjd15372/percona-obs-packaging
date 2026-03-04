@@ -2,7 +2,7 @@
 %define _log_dir /var/log/percona/telemetry-agent
 
 Name:  percona-telemetry-agent
-Version: 1.0.9
+Version: 1.0.0
 Release: 1%{?dist}
 Summary: Percona Telemetry Agent
 Group:  Applications/Databases
@@ -29,14 +29,14 @@ Percona Telemetry Agent gathers information and metrics from Percona products in
 %autosetup -D -a 1
 
 %build
-GITCOMMIT=$(grep '^commit:' %{_sourcedir}/*.obsinfo | awk '{print $2}')
+GITCOMMIT=$(grep '^commit:' %{_sourcedir}/%{name}-*.obsinfo | awk '{print $2}')
 REVISION=$(echo $GITCOMMIT | cut -c1-7)
 
 cat > VERSION <<EOF
 VERSION=%{version}
 REVISION=${REVISION}
 GITCOMMIT=${GITCOMMIT}
-GITBRANCH=obs
+GITBRANCH=v%{version}
 COMPONENT_VERSION=%{version}
 TELEMETRY_AGENT_RELEASE_FULLCOMMIT=${GITCOMMIT}
 EOF
