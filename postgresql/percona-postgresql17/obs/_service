@@ -23,14 +23,6 @@
     <param name="url">https://github.com/Percona-Lab/postgres.git</param>
     <param name="scm">git</param>
     <param name="revision">release-17.9.1</param>
-    <param name="version">_none_</param>
-    <param name="filename">debian</param>
-  </service>
-
-  <service name="obs_scm">
-    <param name="url">https://github.com/Percona-Lab/postgres.git</param>
-    <param name="scm">git</param>
-    <param name="revision">release-17.9.1</param>
     <param name="version">17.9</param>
     <param name="filename">percona-postgresql</param>
   </service>
