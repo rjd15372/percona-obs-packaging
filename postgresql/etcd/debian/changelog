@@ -1,0 +1,9 @@
+etcd (3.3.11-1) unstable; urgency=medium
+
+  * Build etcd
+
+ -- Vagrant Default User <vagrant@stretch.localdomain>  Tue, 22 Jun 2021 13:33:21 +0000
+
+etcd (3.3.11-1) unstable; urgency=low
+  * Initial Release.
+ -- EvgeniyPatlan <evgeniy.patlan@percona.com> Tue, 22 Jun 2021 13:29:43 +0000

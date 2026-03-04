@@ -1,0 +1,69 @@
+Source: etcd
+Maintainer: Debian Go Packaging Team <team+pkg-go@tracker.debian.org>
+Uploaders: Jelmer Vernooij <jelmer@debian.org>,
+           Tim Potter <tpot@hpe.com>,
+           Anthony Fok <foka@debian.org>,
+Section: net
+Priority: optional
+Build-Depends: debhelper,
+               dh-golang
+Standards-Version: 4.5.0
+Vcs-Browser: https://salsa.debian.org/go-team/packages/etcd
+Vcs-Git: https://salsa.debian.org/go-team/packages/etcd.git
+Homepage: https://etcd.io
+Rules-Requires-Root: no
+XS-Go-Import-Path: github.com/coreos/etcd
+
+Package: etcd
+Architecture: all
+Section: oldlibs
+Depends: etcd-client,
+         etcd-server,
+         ${misc:Depends},
+Description: Transitional package for etcd-client and etcd-server
+ This is a transitional package to ease upgrades for splitting the
+ etcd package into a separate client and server piece. It can be
+ safely removed.
+
+Package: etcd-server
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends},
+Depends: adduser,
+         lsb-base,
+         pipexec,
+         ${misc:Depends},
+         ${shlibs:Depends},
+Suggests: etcd-client,
+Built-Using: ${misc:Built-Using},
+Description: highly-available key value store -- daemon
+ A highly-available key value store for shared configuration and service
+ discovery. etcd is inspired by zookeeper and doozer, with a focus on:
+ .
+  * Simple: curl'able user facing API (HTTP+JSON)
+  * Secure: optional SSL client cert authentication
+  * Fast: benchmarked 1000s of writes/s per instance
+  * Reliable: Properly distributed using Raft
+ .
+ Etcd uses the Raft consensus algorithm to manage a highly-available replicated
+ log.
+ .
+ This package contains the server binaries.
+
+Package: etcd-client
+Architecture: any
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+Built-Using: ${misc:Built-Using},
+Description: highly-available key value store -- client
+ A highly-available key value store for shared configuration and service
+ discovery. etcd is inspired by zookeeper and doozer, with a focus on:
+ .
+  * Simple: curl'able user facing API (HTTP+JSON)
+  * Secure: optional SSL client cert authentication
+  * Fast: benchmarked 1000s of writes/s per instance
+  * Reliable: Properly distributed using Raft
+ .
+ Etcd uses the Raft consensus algorithm to manage a highly-available replicated
+ log.
+ .
+ This package contains the client binaries.
