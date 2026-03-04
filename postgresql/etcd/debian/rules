@@ -1,30 +1,40 @@
 #!/usr/bin/make -f
 
-export DH_GOLANG_GO_GENERATE := 1
-export DH_GOLANG_INSTALL_EXTRA := $(shell find . -name fixtures-expired) \
-                                  $(shell find . -name fixtures)
+export DH_VERBOSE=1
+export GOTOOLCHAIN=local
+export CGO_ENABLED=0
 
-# The ignored pkgs are aligned with upstream ./test file,
-# see variables IGNORE_PKGS and INTEGRATION_PKGS in ./test
-export TEST_EXCLUDES := cmd/ etcdserverpb rafttest gopath.proto v3lockpb v3electionpb \
-                        integration e2e contrib functional
-
-TMP=$(CURDIR)/debian/tmp/
+OBS_SOURCES_DIR = /usr/src/packages/SOURCES
 
 %:
-	dh $@
+    dh $@
 
-override_dh_builddeb:
-	dh_builddeb -- -Zgzip
+override_dh_auto_configure:
+override_dh_auto_test:
+override_dh_strip:
+override_dh_dwz:
+override_dh_compress:
+override_dh_shlibdeps:
 
 override_dh_auto_build:
-	mkdir -p usr/bin
+    tar -xzf $(OBS_SOURCES_DIR)/vendor-server.tar.gz   -C server/
+    tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdctl.tar.gz  -C etcdctl/
+    tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdutl.tar.gz  -C etcdutl/
+    mkdir -p bin
+    cd server  && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcd .
+    cd etcdctl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdctl .
+    cd etcdutl && go build -mod=vendor -trimpath -o $(CURDIR)/bin/etcdutl .
 
-override_dh_installman:
+override_dh_auto_install:
+    mkdir -p debian/etcd-server/usr/bin
+    mkdir -p debian/etcd-client/usr/bin
+    cp bin/etcd    debian/etcd-server/usr/bin/
+    cp bin/etcdctl debian/etcd-client/usr/bin/
+    cp bin/etcdutl debian/etcd-client/usr/bin/
 
-# Handle package name (etcd-server) != service name (etcd)
 override_dh_installinit:
-	dh_installinit -p etcd-server --name=etcd
+    dh_installinit -p etcd-server --name=etcd
+
 override_dh_installsystemd:
-	dh_installsystemd -p etcd-server --name=etcd
+    dh_installsystemd -p etcd-server --name=etcd
 

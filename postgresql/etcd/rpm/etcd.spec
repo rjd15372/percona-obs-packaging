@@ -21,6 +21,9 @@ URL:		https://github.com/%{name}-io/%{name}
 Source0:	%{name}-%{version}.tar.gz
 Source1:	%{name}.service
 Source2:	%{name}.conf.yaml
+Source3:        vendor-server.tar.gz
+Source4:        vendor-etcdctl.tar.gz
+Source5:        vendor-etcdutl.tar.gz
 
 BuildRequires:	python3-devel
 %if 0%{?rhel} && 0%{?rhel} == 7
@@ -46,8 +49,16 @@ of a distributed system, with a focus on being:
 
 %prep
 %setup -q -n %{name}-%{version}
+tar -xzf %{SOURCE3} -C server/
+tar -xzf %{SOURCE4} -C etcdctl/
+tar -xzf %{SOURCE5} -C etcdutl/
 
 %build
+export GOTOOLCHAIN=local
+export CGO_ENABLED=0
+pushd server  && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcd    . && popd
+pushd etcdctl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcdctl . && popd
+pushd etcdutl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcdutl . && popd
 
 %install
 %{__mkdir} -p %{buildroot}/%{_bindir}
