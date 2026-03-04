@@ -584,7 +584,7 @@ benchmarks.
 %endif
 
 %prep
-%setup -q -n postgres-%{version}
+%setup -q -n percona-postgresql-%{version}
 %patch1 -p0
 %patch3 -p0
 %patch5 -p0
