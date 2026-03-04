@@ -58,13 +58,16 @@ tar -xzf %{SOURCE5} -C etcdutl/
 %build
 export GOTOOLCHAIN=local
 export CGO_ENABLED=0
-pushd server  && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcd    . && popd
-pushd etcdctl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcdctl . && popd
-pushd etcdutl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../etcdutl . && popd
+mkdir -p bin
+pushd server  && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../bin/etcd    . && popd
+pushd etcdctl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../bin/etcdctl . && popd
+pushd etcdutl && go build -mod=vendor -trimpath -ldflags="-s -w" -o ../bin/etcdutl . && popd
 
 %install
 %{__mkdir} -p %{buildroot}/%{_bindir}
-%{__cp} etcd etcdctl etcdutl %{buildroot}/%{_bindir}
+install -Dm755 bin/etcd    %{buildroot}%{_bindir}/etcd
+install -Dm755 bin/etcdctl %{buildroot}%{_bindir}/etcdctl
+install -Dm755 bin/etcdutl %{buildroot}%{_bindir}/etcdutl
 
 %{__mkdir} -p %{buildroot}/%{_sysconfdir}/%{name}
 %{__cp} %{SOURCE2} %{buildroot}/%{_sysconfdir}/%{name}/%{name}.conf.yaml
