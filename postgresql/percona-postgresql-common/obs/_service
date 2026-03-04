@@ -10,6 +10,16 @@
   </service>
 
   <service name="obs_scm">
+    <param name="url">https://github.com/rjd15372/percona-obs-packaging.git</param>
+    <param name="scm">git</param>
+    <param name="revision">main</param>
+    <param name="version">_none_</param>
+    <param name="extract">*</param>
+    <param name="subdir">postgresql/percona-postgresql-common/rpm</param>
+    <param name="filename">rpm</param>
+  </service>
+
+  <service name="obs_scm">
     <param name="url">https://salsa.debian.org/postgresql/postgresql-common.git</param>
     <param name="scm">git</param>
     <param name="revision">debian/289</param>

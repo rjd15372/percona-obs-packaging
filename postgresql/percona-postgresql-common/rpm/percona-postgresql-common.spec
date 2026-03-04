@@ -1,30 +1,45 @@
-Name:           postgresql-common
-Version:        %{version}
+Name:           percona-postgresql-common
+Version:        1
 Release:        1%{?dist}
 BuildArch:      noarch
 Summary:        PostgreSQL database-cluster manager
-Packager:       Debian PostgreSQL Maintainers <pkg-postgresql-public@lists.alioth.debian.org>
+Provides:       postgresql-common
+Packager:       Percona Development Team <https://jira.percona.com>
+Vendor:         Percona, LLC
 
 License:        GPLv2+
 URL:            https://packages.debian.org/sid/%{name}
-Source0:        http://ftp.debian.org/debian/pool/main/p/%{name}/%{name}_%{version}.tar.xz
-Requires:       postgresql-client-common
+Source0:        %{name}-%{version}.tar.gz
+Requires:       percona-postgresql-client-common
 Requires:       perl-JSON
+Epoch:		1
 
 %description
 The postgresql-common package provides a structure under which
 multiple versions of PostgreSQL may be installed and/or multiple
 clusters maintained at one time.
 
-%package -n postgresql-client-common
+%package -n percona-postgresql-client-common
 Summary: manager for multiple PostgreSQL client versions
-%description -n postgresql-client-common
+Provides: postgresql-client-common
+%description -n percona-postgresql-client-common
 The postgresql-client-common package provides a structure under which
 multiple versions of PostgreSQL client programs may be installed at
 the same time. It provides a wrapper which selects the right version
 for the particular cluster you want to access (with a command line
 option, an environment variable, /etc/postgresql-common/user_clusters,
 or ~/.postgresqlrc).
+
+%package -n percona-postgresql-common-dev
+Provides: postgresql-common-dev
+Provides: postgresql-server-dev-all
+Conflicts: percona-postgresql-server-dev-all
+Obsoletes: percona-postgresql-server-dev-all < 1:277
+Summary: extension build tool for multiple PostgreSQL versions
+%description -n percona-postgresql-common-dev
+The percona-postgresql-common-dev package provides the pg_buildext script for
+simplifying packaging of a PostgreSQL extension supporting multiple major
+versions of the product.
 
 %prep
 # unpack tarball, ignoring the name of the top level directory inside
@@ -36,6 +51,18 @@ make
 
 %install
 rm -rf %{buildroot}
+pushd debian
+        for file in $(ls | grep postgresql| grep -v percona); do
+            mv $file "percona-$file"
+        done
+        echo "dh_make_pgxs/dh_make_pgxs /usr/bin" >> percona-postgresql-common-dev.install
+        echo "debhelper/dh_pgxs_test /usr/bin" >> percona-postgresql-common-dev.install
+        echo "debhelper/Debian /usr/share/perl" >> percona-postgresql-common-dev.install
+        echo "dh_make_pgxs/dh_make_pgxs.1" >> percona-postgresql-common-dev.manpages
+        echo "debhelper/dh_pgxs_test.1" >> percona-postgresql-common-dev.manpages
+        echo "dh_make_pgxs/debian /usr/share/postgresql-common/dh_make_pgxs" >>  percona-postgresql-common-dev.install
+        echo "pgxs_debian_control.mk /usr/share/postgresql-common" >> percona-postgresql-common-dev.install
+popd
 # install in subpackages using the Debian files
 for inst in debian/*.install; do
     pkg=$(basename $inst .install)
@@ -44,11 +71,12 @@ for inst in debian/*.install; do
     while read file dir; do
         [ "$file" = "supported_versions" ] && continue # only relevant on Debian
         mkdir -p %{buildroot}/$dir
-        cp -r $file %{buildroot}/$dir
+        cp -r $file %{buildroot}/$dir || true
         echo "/$dir/${file##*/}" >> files-$pkg
     done < $inst
 done
 # install manpages
+
 for manpages in debian/*.manpages; do
     pkg=$(basename $manpages .manpages)
     [ "$pkg" = "postgresql-server-dev-all" ] && continue
@@ -64,14 +92,11 @@ for manpages in debian/*.manpages; do
     done < $manpages
 done
 # install pg_wrapper symlinks by augmenting the existing pgdg.rpm alternatives
-echo "if [ \$1 -eq 0 ]; then" >> postgresql-client-common.preun
-cat debian/postgresql-*common.links | \
 while read dest link; do
     name="pgsql-$(basename $link)"
-    echo "update-alternatives --install /$link $name /$dest 9999" >> postgresql-client-common.post
-    echo "update-alternatives --remove $name /$dest" >> postgresql-client-common.preun
-done
-echo "fi" >> postgresql-client-common.preun
+    echo "update-alternatives --install /$link $name /$dest 9999" >> percona-postgresql-client-common.post
+    echo "update-alternatives --remove $name /$dest" >> percona-postgresql-client-common.preun
+done < debian/percona-postgresql-client-common.links
 # activate rpm-specific tweaks
 sed -i -e 's/#redhat# //' \
     %{buildroot}/lib/systemd/system-generators/postgresql-generator \
@@ -82,16 +107,16 @@ sed -i -e 's/#redhat# //' \
     %{buildroot}/usr/share/postgresql-common/pg_getwal
 # install init script
 mkdir -p %{buildroot}/etc/init.d %{buildroot}/etc/logrotate.d
-cp debian/postgresql-common.postgresql.init %{buildroot}/etc/init.d/postgresql
-#cp debian/postgresql-common.postinst %{buildroot}/usr/share/postgresql-common
+cp debian/percona-postgresql-common.postgresql.init %{buildroot}/etc/init.d/postgresql
 cp rpm/init-functions-compat %{buildroot}/usr/share/postgresql-common
 # ssl defaults to 'off' here because we don't have pregenerated snakeoil certs
 sed -e 's/__SSL__/off/' createcluster.conf > %{buildroot}/etc/postgresql-common/createcluster.conf
-cp debian/postgresql-common.logrotate %{buildroot}/etc/logrotate.d/postgresql-common
+cp debian/percona-postgresql-common.logrotate %{buildroot}/etc/logrotate.d/postgresql-common
+sed -i '2d' files-percona-postgresql-common-dev
 
-%files -n postgresql-common -f files-postgresql-common
+%files -n percona-postgresql-common -f files-percona-postgresql-common
 %attr(0755, root, root) %config /etc/init.d/postgresql
-#%attr(0755, root, root) /usr/share/postgresql-common/postgresql-common.postinst
+#%attr(0755, root, root) /usr/share/postgresql-common/percona-postgresql-common.postinst
 /usr/share/postgresql-common/init-functions-compat
 %config /etc/postgresql-common/createcluster.conf
 %config /etc/logrotate.d/postgresql-common
@@ -102,7 +127,9 @@ cp debian/postgresql-common.logrotate %{buildroot}/etc/logrotate.d/postgresql-co
 %config /lib/systemd/system-generators/postgresql-generator
 %endif
 
-%files -n postgresql-client-common -f files-postgresql-client-common
+%files -n percona-postgresql-client-common -f files-percona-postgresql-client-common
+
+%files -n percona-postgresql-common-dev -f files-percona-postgresql-common-dev
 
 %post
 # create postgres user
@@ -122,17 +149,13 @@ if version_lt $lrversion 3.8; then
     sed -i -e '/ su /d' /etc/logrotate.d/postgresql-common || :
 fi
 
-%post -n postgresql-client-common -f postgresql-client-common.post
+%post -n percona-postgresql-client-common -f percona-postgresql-client-common.post
 update-alternatives --install /usr/bin/ecpg pgsql-ecpg /usr/share/postgresql-common/pg_wrapper 9999
 
-%preun -n postgresql-client-common -f postgresql-client-common.preun
-if [ $1 -eq 0 ]; then
-    update-alternatives --remove pgsql-ecpg /usr/share/postgresql-common/pg_wrapper
-fi
+%preun -n percona-postgresql-client-common -f percona-postgresql-client-common.preun
+update-alternatives --remove pgsql-ecpg /usr/share/postgresql-common/pg_wrapper
 
 %changelog
-* Wed Oct 23 2024 Dennis Schwan <dennis.schwan@1und1.de> 265-1
-- prevent update-alternatives execution when packages are updated and not removed
 * Tue Sep 29 2020 Christoph Berg <myon@debian.org> 217-1
 - Drop postgresql-server-dev-all package, it's debian-specific only.
 * Fri Dec 09 2016 Bernd Helmle <bernd.helmle@credativ.de> 177-1
@@ -143,3 +166,4 @@ fi
 - Omit the LD_PRELOAD logic in pg_wrapper
 * Thu Jun  5 2014 Christoph Berg <christoph.berg@credativ.de> 158-1
 - Initial specfile version
+
