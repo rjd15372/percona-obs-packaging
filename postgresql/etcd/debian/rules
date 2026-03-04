@@ -26,6 +26,8 @@ override_dh_auto_build:
 	cd etcdutl && go build -mod=vendor -trimpath -o ../bin/etcdutl .
 	cp debian/etcd.conf.yaml .
 
+override_dh_installman:
+
 override_dh_installinit:
 	dh_installinit -p etcd-server --name=etcd
 
