@@ -16,7 +16,7 @@ TMP=$(CURDIR)/debian/tmp/
 # In OBS, the .obsinfo is in /usr/src/packages/SOURCES/, not the source tree
 OBS_SOURCES_DIR = /usr/src/packages/SOURCES
 $(shell if [ ! -f VERSION ]; then \
-    _obsinfo=$$(ls $(OBS_SOURCES_DIR)/percona-telemetry-agent-*.obsinfo 2>/dev/null | head -1); \
+    _obsinfo=$$(ls $(OBS_SOURCES_DIR)/*percona-telemetry-agent-*.obsinfo 2>/dev/null | head -1); \
     if [ -n "$${_obsinfo}" ]; then \
         _commit=$$(grep '^commit:' $${_obsinfo} | awk '{print $$2}'); \
         _version=$$(grep '^version:' $${_obsinfo} | awk '{print $$2}'); \

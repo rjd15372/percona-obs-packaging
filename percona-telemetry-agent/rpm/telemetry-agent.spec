@@ -29,7 +29,7 @@ Percona Telemetry Agent gathers information and metrics from Percona products in
 %autosetup -D -a 1
 
 %build
-GITCOMMIT=$(grep '^commit:' %{_sourcedir}/%{name}-*.obsinfo | awk '{print $2}')
+GITCOMMIT=$(grep '^commit:' %{_sourcedir}/*%{name}-*.obsinfo | awk '{print $2}')
 REVISION=$(echo $GITCOMMIT | cut -c1-7)
 
 cat > VERSION <<EOF
