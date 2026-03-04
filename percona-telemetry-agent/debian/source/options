@@ -1,2 +1,2 @@
-extend-diff-ignore = vendor/
+extend-diff-ignore = (vendor/|^VERSION$)
 
