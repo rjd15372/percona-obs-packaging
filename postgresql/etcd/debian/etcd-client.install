@@ -1,2 +1,2 @@
-etcdctl usr/bin
+bin/etcdctl usr/bin
 

@@ -20,17 +20,11 @@ override_dh_auto_build:
 	tar -xzf $(OBS_SOURCES_DIR)/vendor-server.tar.gz   -C server/
 	tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdctl.tar.gz  -C etcdctl/
 	tar -xzf $(OBS_SOURCES_DIR)/vendor-etcdutl.tar.gz  -C etcdutl/
-	cd server  && go build -mod=vendor -trimpath -o $(CURDIR)/etcd .
-	cd etcdctl && go build -mod=vendor -trimpath -o $(CURDIR)/etcdctl .
-	cd etcdutl && go build -mod=vendor -trimpath -o $(CURDIR)/etcdutl .
+	mkdir -p bin
+	cd server  && go build -mod=vendor -trimpath -o ../bin/etcd .
+	cd etcdctl && go build -mod=vendor -trimpath -o ../bin/etcdctl .
+	cd etcdutl && go build -mod=vendor -trimpath -o ../bin/etcdutl .
 	cp debian/etcd.conf.yaml .
-
-override_dh_auto_install:
-	mkdir -p debian/etcd-server/usr/bin
-	mkdir -p debian/etcd-client/usr/bin
-	cp bin/etcd    debian/etcd-server/usr/bin/
-	cp bin/etcdctl debian/etcd-client/usr/bin/
-	cp bin/etcdutl debian/etcd-client/usr/bin/
 
 override_dh_installinit:
 	dh_installinit -p etcd-server --name=etcd
