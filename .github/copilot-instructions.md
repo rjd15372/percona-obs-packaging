@@ -243,55 +243,74 @@ Options:
 
 ## Importing an Existing OBS Package
 
-When given an OBS package URL and a target location within `root/`, follow these exact steps:
+When given an OBS package URL and a target location within `root/`, follow these steps. The user may request either a **full source import** (copy all files from OBS) or an **aggregate import** (create an `_aggregate` link so the local OBS pulls built packages from the source project). Use the mode explicitly requested; default to full source import if not specified.
 
 ### Inputs
 - **OBS package URL** — the web UI URL, e.g. `http://192.168.1.103:3000/package/show/home:Admin/obs-service-tar_scm`
 - **Target location** — directory relative to `root/` where the package should land (e.g. `root/` for a top-level package, `root/ppg/17.9/` for a subproject package)
+- **Import mode** — `full` (copy source files) or `aggregate` (create `_aggregate` link)
 
-### Steps
+### Step 1 — Determine the API URL
 
-**1. Parse the URL**
-Extract from the URL:
-- `apiurl`: the scheme+host+port (`http://192.168.1.103:3000`)
-- `obs_project`: the project name (`home:Admin`)
-- `package_name`: the package name (`obs-service-tar_scm`) — this becomes the local directory name
+The web UI URL and API URL are not always the same host:
 
-**2. Fetch package metadata**
+| Web UI host | API host to use |
+|---|---|
+| `build.opensuse.org` | `api.opensuse.org` |
+| Any other host | same host as the web UI |
+
+The path format `/package/show/<project>/<package>` always identifies the OBS project and package name regardless of which host is used.
+
+### Step 2 — Fetch package metadata
+
 ```sh
 osc -A <apiurl> api /source/<obs_project>/<package_name>/_meta
 ```
-Extract `<title>` and `<description>` from the returned XML. These populate `package.yaml`.
+Extract `<title>` and `<description>`. Treat a description containing only whitespace as empty.
 
-**3. List package source files**
+### Step 3 — Create the directory
+
+```sh
+mkdir -p root/<target>/<package_name>/obs
+```
+
+### Step 4a — Full source import
+
+List files:
 ```sh
 osc -A <apiurl> api /source/<obs_project>/<package_name>
 ```
-The returned XML `<directory>` lists all `<entry name="...">` elements. Collect all file names.
-
-**4. Download each file**
-For each file name from step 3:
+Download each `<entry name="...">`:
 ```sh
 osc -A <apiurl> api /source/<obs_project>/<package_name>/<filename>
 ```
+Place every file directly in `obs/`. Do **not** split into `debian/` or `rpm/` — that is a separate step if desired.
 
-**5. Create the directory structure**
-```
-root/<target>/<package_name>/
-├── package.yaml       ← title + description from _meta (omit if both are empty)
-└── obs/               ← all files downloaded in step 4
-    ├── <file1>
-    └── <file2>
-```
-All OBS source files go into `obs/` regardless of type (`_aggregate`, `_service`, `_multibuild`, `*.spec`, `*.tar.gz`, etc.). Do **not** split them into `debian/` or `rpm/` subdirs during import — that restructuring is a separate step if desired.
+### Step 4b — Aggregate import
 
-**6. Write `package.yaml`**
+Create `obs/_aggregate` pointing to the source project. When the source is on a remote OBS instance, prefix the project name with the instance identifier:
+
+| Source OBS instance | Project name in `_aggregate` |
+|---|---|
+| `build.opensuse.org` / `api.opensuse.org` | `openSUSE.org:<obs_project>` (e.g. `openSUSE.org:openSUSE:Tools`) |
+| Local OBS (`192.168.1.103`) | Use the project name as-is (e.g. `home:Admin`) |
+
+```xml
+<aggregatelist>
+  <aggregate project="<mapped_project>">
+    <package><package_name></package>
+  </aggregate>
+</aggregatelist>
+```
+
+### Step 5 — Write `package.yaml`
+
 ```yaml
 title: <title from _meta>
 description: |
   <description from _meta, reflowed to ~80 chars per line>
 ```
-Omit `package.yaml` entirely if both `<title>` and `<description>` are empty in `_meta`.
+Omit `package.yaml` entirely if both `<title>` and `<description>` are empty.
 
 ### Notes
 - Use the OBS package name unchanged as the local directory name.
