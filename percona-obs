@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import xml.etree.ElementTree as ET
@@ -312,6 +313,36 @@ def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
     ) and _child_text(current, "description") == _child_text(desired, "description")
 
 
+def _obs_api_error(e: urllib.error.HTTPError, context: str) -> None:
+    """Read the OBS HTTP error response body, log it, and exit with a friendly message.
+
+    Parses the OBS XML error envelope (``<status code="..."><summary>...</summary></status>``)
+    to show the OBS error code and summary instead of a raw traceback.  Adds an
+    actionable hint for well-known error codes such as ``repo_dependency``.
+    """
+    try:
+        body = e.read().decode("utf-8", errors="replace")
+    except Exception:
+        body = ""
+    logger.debug(f"OBS error response body: {body!r}")
+    code = ""
+    summary = f"HTTP {e.code}: {e.reason}"
+    if body:
+        try:
+            root = ET.fromstring(body)
+            code = root.get("code", "")
+            summary = (root.findtext("summary") or "").strip() or summary
+        except ET.ParseError:
+            summary = body.strip() or summary
+    msg = f"{code}: {summary}" if code else summary
+    if code == "repo_dependency":
+        msg += (
+            "\n  hint: use --force to bypass, then run "
+            "'config apply --force' on all affected subprojects"
+        )
+    raise SystemExit(f"error {context}:\n  {msg}")
+
+
 def _apply_project_config(
     apiurl: str,
     obs_project_name: str,
@@ -337,19 +368,29 @@ def _apply_project_config(
     )
 
     # --- project meta ---
+    logger.debug(f"  meta XML:\n{meta}")
+    current = b""
+    project_meta_exists = True
     if not force:
         try:
             logger.debug(f"fetching project meta: {obs_project_name}")
             current = _decode_obs_response(
                 osc.core.show_project_meta(apiurl, obs_project_name)
             ).encode()
-            if _project_meta_subset_equal(current, meta):
-                logger.debug(f"project meta unchanged: {obs_project_name}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                project_meta_exists = False
             else:
-                logger.debug(f"updating project meta: {obs_project_name}")
-                if dry_run:
-                    _print_dry(f"project meta  {obs_project_name}")
-                else:
+                _obs_api_error(e, f"fetching project meta for {obs_project_name}")
+        if project_meta_exists and _project_meta_subset_equal(current, meta):
+            logger.debug(f"project meta unchanged: {obs_project_name}")
+        else:
+            action = "creating" if not project_meta_exists else "updating"
+            logger.debug(f"{action} project meta: {obs_project_name}")
+            if dry_run:
+                _print_dry(f"project meta  {obs_project_name}")
+            else:
+                try:
                     osc.core.edit_meta(
                         metatype="prj",
                         path_args=(obs_project_name,),
@@ -357,49 +398,50 @@ def _apply_project_config(
                         force=False,
                         apiurl=apiurl,
                     )
-                    _print_change(f"project meta  {obs_project_name}")
-        except Exception:
-            logger.debug(f"creating project meta: {obs_project_name}")
-            if dry_run:
-                _print_dry(f"project meta  {obs_project_name}")
-            else:
-                osc.core.edit_meta(
-                    metatype="prj",
-                    path_args=(obs_project_name,),
-                    data=[meta],
-                    force=False,
-                    apiurl=apiurl,
-                )
+                except urllib.error.HTTPError as e:
+                    _obs_api_error(e, f"{action} project meta for {obs_project_name}")
                 _print_change(f"project meta  {obs_project_name}")
     else:
         logger.debug(f"force-updating project meta: {obs_project_name}")
         if dry_run:
             _print_dry(f"project meta  {obs_project_name}")
         else:
-            osc.core.edit_meta(
-                metatype="prj",
-                path_args=(obs_project_name,),
-                data=[meta],
-                force=True,
-                apiurl=apiurl,
-            )
+            try:
+                osc.core.edit_meta(
+                    metatype="prj",
+                    path_args=(obs_project_name,),
+                    data=[meta],
+                    force=True,
+                    apiurl=apiurl,
+                )
+            except urllib.error.HTTPError as e:
+                _obs_api_error(e, f"force-updating project meta for {obs_project_name}")
             _print_change(f"project meta  {obs_project_name}")
 
     # --- project config ---
     project_config_str = project_config.get("project-config") or ""
+    current_conf = ""
+    project_conf_exists = True
     if not force:
         try:
             logger.debug(f"fetching project config: {obs_project_name}")
             current_conf = _decode_obs_response(
                 osc.core.show_project_conf(apiurl, obs_project_name)
             )
-            if current_conf.strip() == project_config_str.strip():
-                logger.debug(f"project config unchanged: {obs_project_name}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                project_conf_exists = False
             else:
-                logger.debug(f"updating project config: {obs_project_name}")
-                if dry_run:
-                    _print_dry(f"project config  {obs_project_name}")
-                else:
+                _obs_api_error(e, f"fetching project config for {obs_project_name}")
+        if project_conf_exists and current_conf.strip() == project_config_str.strip():
+            logger.debug(f"project config unchanged: {obs_project_name}")
+        else:
+            action = "creating" if not project_conf_exists else "updating"
+            logger.debug(f"{action} project config: {obs_project_name}")
+            if dry_run:
+                _print_dry(f"project config  {obs_project_name}")
+            else:
+                try:
                     osc.core.edit_meta(
                         metatype="prjconf",
                         path_args=(obs_project_name,),
@@ -407,32 +449,26 @@ def _apply_project_config(
                         force=False,
                         apiurl=apiurl,
                     )
-                    _print_change(f"project config  {obs_project_name}")
-        except Exception:
-            logger.debug(f"creating project config: {obs_project_name}")
-            if dry_run:
-                _print_dry(f"project config  {obs_project_name}")
-            else:
-                osc.core.edit_meta(
-                    metatype="prjconf",
-                    path_args=(obs_project_name,),
-                    data=[project_config_str],
-                    force=False,
-                    apiurl=apiurl,
-                )
+                except urllib.error.HTTPError as e:
+                    _obs_api_error(e, f"{action} project config for {obs_project_name}")
                 _print_change(f"project config  {obs_project_name}")
     else:
         logger.debug(f"force-updating project config: {obs_project_name}")
         if dry_run:
             _print_dry(f"project config  {obs_project_name}")
         else:
-            osc.core.edit_meta(
-                metatype="prjconf",
-                path_args=(obs_project_name,),
-                data=[project_config_str],
-                force=True,
-                apiurl=apiurl,
-            )
+            try:
+                osc.core.edit_meta(
+                    metatype="prjconf",
+                    path_args=(obs_project_name,),
+                    data=[project_config_str],
+                    force=True,
+                    apiurl=apiurl,
+                )
+            except urllib.error.HTTPError as e:
+                _obs_api_error(
+                    e, f"force-updating project config for {obs_project_name}"
+                )
             _print_change(f"project config  {obs_project_name}")
 
 
@@ -458,6 +494,8 @@ def _apply_package_config(
         package_config.get("description", ""),
     )
 
+    logger.debug(f"  package meta XML:\n{meta}")
+    package_exists = True
     if not force:
         try:
             logger.debug(f"fetching package meta: {obs_project_name}/{package_name}")
@@ -469,21 +507,37 @@ def _apply_package_config(
                     f"package meta unchanged: {obs_project_name}/{package_name}"
                 )
                 return
-        except Exception:
-            pass
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                package_exists = False
+            else:
+                _obs_api_error(
+                    e,
+                    f"fetching package meta for {obs_project_name}/{package_name}",
+                )
 
-    action = "force-updating" if force else "updating"
+    if force:
+        action = "force-updating"
+    elif package_exists:
+        action = "updating"
+    else:
+        action = "creating"
     logger.debug(f"{action} package meta: {obs_project_name}/{package_name}")
     if dry_run:
         _print_dry(f"package  {obs_project_name}/{package_name}")
     else:
-        osc.core.edit_meta(
-            metatype="pkg",
-            path_args=(obs_project_name, package_name),
-            data=[meta],
-            force=force,
-            apiurl=apiurl,
-        )
+        try:
+            osc.core.edit_meta(
+                metatype="pkg",
+                path_args=(obs_project_name, package_name),
+                data=[meta],
+                force=force,
+                apiurl=apiurl,
+            )
+        except urllib.error.HTTPError as e:
+            _obs_api_error(
+                e, f"{action} package meta for {obs_project_name}/{package_name}"
+            )
         _print_change(f"package  {obs_project_name}/{package_name}")
 
 
