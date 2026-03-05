@@ -141,15 +141,46 @@ These fields map directly to the OBS package `<title>` and `<description>` XML e
 
 **Global options** (required on every call):
 ```sh
-percona-obs -A <url> -R <rootprj> <command> ...
+percona-obs -A <url> -R <rootprj> [--verbose] <command> ...
 #   -A / --apiurl    OBS API URL (e.g. http://my-obs.local:8000)
 #   -R / --rootprj   OBS root project (e.g. home:Admin)
+#   --verbose        Print debug-level log messages (API calls, unchanged items)
 ```
 OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-run wizard).
 
-### `sync [--force] [project] [package]`
+### Output format
 
-Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then OBS source files are uploaded.
+`percona-obs` prints only the actions that produce an actual change. Each line has a two-character prefix:
+
+| Prefix | Meaning |
+|---|---|
+| `  + ` | Change applied to OBS |
+| `  ~ ` | Would change (dry-run mode only — nothing written) |
+| `  > ` | Service triggered |
+| `  ✔ ` | Command completed successfully |
+| `  · ` | Debug message (only shown with `--verbose`) |
+
+### Git safeguard
+
+`sync` and `config apply` abort if:
+- the working tree has uncommitted or untracked changes (`git status --porcelain`), or
+- the HEAD commit has not been pushed to any remote (`git branch -r --contains HEAD`).
+
+Use `--dirty` to skip this check (e.g. for local testing or CI pipelines that manage their own state).
+
+### Change detection
+
+Both `sync` and `config apply` compare the desired state against what OBS currently holds **before** making any write call:
+
+- **Project / package meta** — the managed fields (title, description, repositories) are compared as XML; OBS-managed fields (ACL entries, person/group/lock) are ignored.
+- **Project config** — the raw string is compared after stripping leading/trailing whitespace.
+- **`obs/` files** — each file's MD5 is compared to the MD5 returned by the OBS source directory listing. Only changed files are uploaded.
+
+If nothing changed, no API write call is made and no output line is printed for that item. Use `--force` to bypass comparison and always write.
+
+### `sync [--force] [--dirty] [--dry-run] [-m MSG] [project] [package]`
+
+Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then `obs/` source files are uploaded as a **single OBS source revision**.
 
 | Call form | Effect |
 |---|---|
@@ -158,7 +189,15 @@ Syncs local packaging files to OBS, creating or updating projects and packages (
 | `sync <top-level-package>` | Sync a single package directly under `root/` |
 | `sync <project> <package>` | Sync a single package under the project |
 
-`--force` bypasses OBS conflict checks — use when the server's copy was modified externally.
+Options:
+- `--force` — bypass OBS conflict checks; always write meta and files regardless of diff.
+- `--dirty` — skip the git safeguard (allow uncommitted changes or an unpushed HEAD).
+- `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. Outputs `  ~ ` lines instead of `  + `.
+- `-m MSG` / `--message MSG` — commit message recorded in the OBS source revision. When omitted, a message is generated automatically:
+  - Normal: `sync: <branch>@<short-sha> (<remote_url>)`
+  - With `--dirty`: `sync: <branch>@<short-sha> (local changes on <hostname>)`
+
+When targeting a specific package (`sync <project> <package>`), the ancestor project chain is only walked if the target project does not yet exist on OBS (fast path avoids redundant GET calls otherwise).
 
 Project names use colon notation matching the directory hierarchy (e.g. `ppg:17.9`).
 
@@ -173,7 +212,7 @@ Triggers an OBS service run (`runservice`) for one or more packages, causing OBS
 | `build <top-level-package>` | Trigger service for a single top-level package |
 | `build <project> <package>` | Trigger service for a single package under the project |
 
-### `config apply [--force] [project] [package]`
+### `config apply [--force] [--dirty] [--dry-run] [project] [package]`
 
 Applies `project.yaml` or `package.yaml` configuration to OBS. Updates project meta (title, description, repositories), project build config, and package meta. Does **not** upload `obs/` source files.
 
@@ -183,7 +222,10 @@ Applies `project.yaml` or `package.yaml` configuration to OBS. Updates project m
 | `config apply <project>` | Apply `<project>/project.yaml` to that project |
 | `config apply <project> <package>` | Apply `<package>/package.yaml` to that package |
 
-`--force` bypasses OBS conflict checks (`?force=1`) — use when the server's copy was modified externally.
+Options:
+- `--force` — bypass OBS conflict checks (`?force=1`); use when the server's copy was modified externally.
+- `--dirty` — skip the git safeguard.
+- `--dry-run` — simulate without writing to OBS.
 
 ## Adding a New PostgreSQL Extension
 1. Copy `ppg/17.9/percona-pg-telemetry/` as a template

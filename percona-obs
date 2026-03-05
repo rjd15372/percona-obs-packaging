@@ -278,11 +278,14 @@ def _apply_project_config(
     project_path: Path,
     rootprj: str,
     force: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Create or update OBS project metadata and build config from project.yaml.
 
     Skips the API call when the content already matches what OBS has, unless
     --force is given (which bypasses both the local comparison and OBS conflict checks).
+    With --dry-run, read-only OBS calls are made to compute the diff but no
+    changes are written.
     """
     project_config = _load_project_config_with_inheritance(project_path)
     meta = build_project_meta(
@@ -304,6 +307,22 @@ def _apply_project_config(
                 logger.debug(f"project meta unchanged: {obs_project_name}")
             else:
                 logger.debug(f"updating project meta: {obs_project_name}")
+                if dry_run:
+                    print(f"  ~ project meta  {obs_project_name}")
+                else:
+                    osc.core.edit_meta(
+                        metatype="prj",
+                        path_args=(obs_project_name,),
+                        data=[meta],
+                        force=False,
+                        apiurl=apiurl,
+                    )
+                    print(f"  + project meta  {obs_project_name}")
+        except Exception:
+            logger.debug(f"creating project meta: {obs_project_name}")
+            if dry_run:
+                print(f"  ~ project meta  {obs_project_name}")
+            else:
                 osc.core.edit_meta(
                     metatype="prj",
                     path_args=(obs_project_name,),
@@ -312,26 +331,19 @@ def _apply_project_config(
                     apiurl=apiurl,
                 )
                 print(f"  + project meta  {obs_project_name}")
-        except Exception:
-            logger.debug(f"creating project meta: {obs_project_name}")
+    else:
+        logger.debug(f"force-updating project meta: {obs_project_name}")
+        if dry_run:
+            print(f"  ~ project meta  {obs_project_name}")
+        else:
             osc.core.edit_meta(
                 metatype="prj",
                 path_args=(obs_project_name,),
                 data=[meta],
-                force=False,
+                force=True,
                 apiurl=apiurl,
             )
             print(f"  + project meta  {obs_project_name}")
-    else:
-        logger.debug(f"force-updating project meta: {obs_project_name}")
-        osc.core.edit_meta(
-            metatype="prj",
-            path_args=(obs_project_name,),
-            data=[meta],
-            force=True,
-            apiurl=apiurl,
-        )
-        print(f"  + project meta  {obs_project_name}")
 
     # --- project config ---
     project_config_str = project_config.get("project-config") or ""
@@ -345,6 +357,22 @@ def _apply_project_config(
                 logger.debug(f"project config unchanged: {obs_project_name}")
             else:
                 logger.debug(f"updating project config: {obs_project_name}")
+                if dry_run:
+                    print(f"  ~ project config  {obs_project_name}")
+                else:
+                    osc.core.edit_meta(
+                        metatype="prjconf",
+                        path_args=(obs_project_name,),
+                        data=[project_config_str],
+                        force=False,
+                        apiurl=apiurl,
+                    )
+                    print(f"  + project config  {obs_project_name}")
+        except Exception:
+            logger.debug(f"creating project config: {obs_project_name}")
+            if dry_run:
+                print(f"  ~ project config  {obs_project_name}")
+            else:
                 osc.core.edit_meta(
                     metatype="prjconf",
                     path_args=(obs_project_name,),
@@ -353,26 +381,19 @@ def _apply_project_config(
                     apiurl=apiurl,
                 )
                 print(f"  + project config  {obs_project_name}")
-        except Exception:
-            logger.debug(f"creating project config: {obs_project_name}")
+    else:
+        logger.debug(f"force-updating project config: {obs_project_name}")
+        if dry_run:
+            print(f"  ~ project config  {obs_project_name}")
+        else:
             osc.core.edit_meta(
                 metatype="prjconf",
                 path_args=(obs_project_name,),
                 data=[project_config_str],
-                force=False,
+                force=True,
                 apiurl=apiurl,
             )
             print(f"  + project config  {obs_project_name}")
-    else:
-        logger.debug(f"force-updating project config: {obs_project_name}")
-        osc.core.edit_meta(
-            metatype="prjconf",
-            path_args=(obs_project_name,),
-            data=[project_config_str],
-            force=True,
-            apiurl=apiurl,
-        )
-        print(f"  + project config  {obs_project_name}")
 
 
 def _apply_package_config(
@@ -381,11 +402,13 @@ def _apply_package_config(
     package_name: str,
     package_path: Path,
     force: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Create or update OBS package metadata from package.yaml.
 
     Skips the API call when the content already matches what OBS has, unless
-    --force is given.
+    --force is given.  With --dry-run, read-only OBS calls are made to compute
+    the diff but no changes are written.
     """
     package_config = load_yaml(package_path / "package.yaml")
     meta = build_package_meta(
@@ -411,14 +434,17 @@ def _apply_package_config(
 
     action = "force-updating" if force else "updating"
     logger.debug(f"{action} package meta: {obs_project_name}/{package_name}")
-    osc.core.edit_meta(
-        metatype="pkg",
-        path_args=(obs_project_name, package_name),
-        data=[meta],
-        force=force,
-        apiurl=apiurl,
-    )
-    print(f"  + package  {obs_project_name}/{package_name}")
+    if dry_run:
+        print(f"  ~ package  {obs_project_name}/{package_name}")
+    else:
+        osc.core.edit_meta(
+            metatype="pkg",
+            path_args=(obs_project_name, package_name),
+            data=[meta],
+            force=force,
+            apiurl=apiurl,
+        )
+        print(f"  + package  {obs_project_name}/{package_name}")
 
 
 def _upload_obs_files(
@@ -427,6 +453,7 @@ def _upload_obs_files(
     package_name: str,
     obs_dir: Path,
     message: str = "",
+    dry_run: bool = False,
 ) -> None:
     """Upload changed files from obs_dir to OBS as a single committed revision.
 
@@ -434,9 +461,11 @@ def _upload_obs_files(
     After all files are staged, a single commit is issued, optionally with a
     message. This produces one OBS source revision per sync instead of one
     per file, and skips the commit entirely when nothing changed.
+    With --dry-run, read-only OBS calls are made to compute the diff but no
+    files are uploaded or committed.
     """
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
-    uploaded: list[str] = []
+    changed: list[str] = []
 
     for filepath in sorted(obs_dir.iterdir()):
         if not filepath.is_file():
@@ -445,30 +474,35 @@ def _upload_obs_files(
         if obs_md5s.get(filepath.name) == local_md5:
             logger.debug(f"{filepath.name} unchanged (md5 match)")
             continue
-        logger.debug(f"staging {filepath.name} → {obs_project_name}/{package_name}")
-        url = osc.core.makeurl(
-            apiurl,
-            ["source", obs_project_name, package_name, filepath.name],
-            query={"rev": "upload"},
-        )
-        osc.connection.http_PUT(url, file=str(filepath))
-        uploaded.append(filepath.name)
+        changed.append(filepath.name)
+        if not dry_run:
+            logger.debug(f"staging {filepath.name} → {obs_project_name}/{package_name}")
+            url = osc.core.makeurl(
+                apiurl,
+                ["source", obs_project_name, package_name, filepath.name],
+                query={"rev": "upload"},
+            )
+            osc.connection.http_PUT(url, file=str(filepath))
 
-    if not uploaded:
+    if not changed:
         logger.debug(f"no files changed: {obs_project_name}/{package_name}")
+        return
+
+    if dry_run:
+        print(f"  ~ {len(changed)} files  {obs_project_name}/{package_name}")
         return
 
     commit_query: dict = {"cmd": "commit"}
     if message:
         commit_query["comment"] = message
     logger.debug(
-        f"committing {len(uploaded)} file(s): {obs_project_name}/{package_name}"
+        f"committing {len(changed)} file(s): {obs_project_name}/{package_name}"
     )
     url = osc.core.makeurl(
         apiurl, ["source", obs_project_name, package_name], query=commit_query
     )
     osc.connection.http_POST(url)
-    print(f"  + {len(uploaded)} files  {obs_project_name}/{package_name}")
+    print(f"  + {len(changed)} files  {obs_project_name}/{package_name}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -661,7 +695,12 @@ def cmd_sync(args):
                     obs_project_name = prj_name
                     if raw_proj not in seen_projects:
                         _apply_project_config(
-                            apiurl, prj_name, proj_path, args.rootprj, force=args.force
+                            apiurl,
+                            prj_name,
+                            proj_path,
+                            args.rootprj,
+                            force=args.force,
+                            dry_run=args.dry_run,
                         )
                         seen_projects.add(raw_proj)
         else:
@@ -673,22 +712,38 @@ def cmd_sync(args):
                 obs_project_name = prj_name
                 if raw_proj not in seen_projects:
                     _apply_project_config(
-                        apiurl, prj_name, proj_path, args.rootprj, force=args.force
+                        apiurl,
+                        prj_name,
+                        proj_path,
+                        args.rootprj,
+                        force=args.force,
+                        dry_run=args.dry_run,
                     )
                     seen_projects.add(raw_proj)
 
         _apply_package_config(
-            apiurl, obs_project_name, package_path.name, package_path, force=args.force
+            apiurl,
+            obs_project_name,
+            package_path.name,
+            package_path,
+            force=args.force,
+            dry_run=args.dry_run,
         )
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
             message = args.message or _generate_sync_message(args.dirty)
             _upload_obs_files(
-                apiurl, obs_project_name, package_path.name, obs_dir, message=message
+                apiurl,
+                obs_project_name,
+                package_path.name,
+                obs_dir,
+                message=message,
+                dry_run=args.dry_run,
             )
 
-    print("  ✔  sync successful")
+    suffix = " (dry run)" if args.dry_run else ""
+    print(f"  ✔  sync successful{suffix}")
 
 
 def cmd_build(args):
@@ -759,14 +814,25 @@ def cmd_config_apply(args):
             )
             sys.exit(1)
         _apply_package_config(
-            apiurl, obs_project_name, package_path.name, package_path, force=args.force
+            apiurl,
+            obs_project_name,
+            package_path.name,
+            package_path,
+            force=args.force,
+            dry_run=args.dry_run,
         )
     else:
         _apply_project_config(
-            apiurl, obs_project_name, project_path, args.rootprj, force=args.force
+            apiurl,
+            obs_project_name,
+            project_path,
+            args.rootprj,
+            force=args.force,
+            dry_run=args.dry_run,
         )
 
-    print("  ✔  config apply successful")
+    suffix = " (dry run)" if args.dry_run else ""
+    print(f"  ✔  config apply successful{suffix}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -833,6 +899,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MSG",
         help="Commit message recorded in the OBS source revision when files are uploaded.",
     )
+    sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Simulate actions without writing anything to OBS.",
+    )
     sync_parser.set_defaults(func=cmd_sync)
 
     build_parser_ = subparsers.add_parser(
@@ -891,6 +963,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
+    )
+    config_apply_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Simulate actions without writing anything to OBS.",
     )
     config_apply_parser.set_defaults(func=cmd_config_apply)
 
