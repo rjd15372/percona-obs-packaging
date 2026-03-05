@@ -1,9 +1,15 @@
 # Percona OBS Packaging - AI Coding Instructions
 
 ## Project Purpose
-This repo contains packaging metadata (Debian and RPM) for building Percona packages via [OpenSUSE Build Service (OBS)](https://build.opensuse.org/). It does **not** contain upstream source code — it only contains packaging files. `osc` is the OBS CLI client and `percona-obs` is the management script (`requirements.txt`).
+
+This repo contains RPM and Debian **packaging metadata** for building Percona software packages via a self-hosted [OpenSUSE Build Service (OBS)](https://build.opensuse.org/) instance. It does **not** contain upstream source code — only packaging files. Sources are fetched at build time by OBS services declared in `obs/_service`.
+
+- `osc` — the OBS CLI client (Python library, also used programmatically)
+- `percona-obs` — the management script in this repo (see `requirements.txt`)
+- `root/` — all packaging content lives here, mirroring the OBS project/package hierarchy
 
 ## Repository Layout
+
 ```
 root/
 ├── project.yaml             # OBS project config for the root project
@@ -29,7 +35,7 @@ root/
         └── ...
 ```
 
-All packages metadata is stored under the root directory, with optional subproject grouping. This follows OBS's filesystem layout conventions.
+A directory is treated as a **package** if it contains an `obs/` subdirectory or a `package.yaml` file. Everything else is treated as a **project** (subproject grouping).
 
 ## Two Package Archetypes
 
@@ -68,7 +74,7 @@ Debtransform-Files-Tar: debian.tar.gz vendor.tar.gz rpm.tar.gz
 
 ## Project Configuration (project.yaml)
 
-Each project directory may contain a `project.yaml` that defines its OBS project metadata. See `root/project.yaml` for a full example.
+Each project directory may contain a `project.yaml` that defines its OBS project metadata.
 
 ```yaml
 name:                          # optional — overrides the OBS project name (empty = use derived name)
@@ -77,7 +83,7 @@ description: "Human-readable description."
 repositories:
   - name: RockyLinux_9         # OBS repository name
     path:
-      project: openSUSE.org:RockyLinux:9   # upstream mirror project
+      project: openSUSE.org:RockyLinux:9   # upstream OBS project providing the build environment
       repository: standard
     archs: [x86_64]
 project-config: |              # raw OBS project config string
@@ -86,9 +92,38 @@ project-config: |              # raw OBS project config string
   %endif
 ```
 
-- `name` being absent or empty means the OBS project name is derived from the directory path + `--rootprj` (e.g. `home:Admin:ppg:17.9`)
-- `repositories[].path` points to an existing OBS project/repo to use as the build host
-- `project-config` is passed verbatim to the OBS project config API
+- `name` — absent or empty means the OBS project name is derived from the directory path relative to `root/` joined with `--rootprj` using colons (e.g. `home:Admin:ppg:17.9`). Set it explicitly only when the OBS project name must differ from the directory path.
+- `repositories[].path` — points to an existing OBS project/repo that provides the base build environment (OS packages, toolchain).
+- `project-config` — passed verbatim to the OBS project config API; used for RPM macros, module expansion flags, etc.
+- `title` and `description` are informational only and never inherited by child projects.
+
+### Config inheritance
+
+`repositories` and `project-config` are **inherited** from ancestor `project.yaml` files when absent or empty in a project's own file. The nearest ancestor that defines the field wins. `title`, `description`, and `name` are never inherited.
+
+This means:
+- The root `project.yaml` acts as the default config for all subprojects.
+- A subproject only needs its own `project.yaml` if it requires a different build environment.
+- An empty or missing `project.yaml` in a subdirectory is valid — it will fully inherit from its parent.
+
+### Dynamically generated repository paths
+
+When `percona-obs` pushes project metadata to OBS, it automatically injects a `<path>` entry pointing to the **immediate parent OBS project** into every repository of every non-root subproject. This is done by `build_project_meta()` in `percona-obs`.
+
+For example, the `home:Admin:ppg:17.9` project gets this injected for each repository:
+```xml
+<repository name="RockyLinux_9">
+  <path project="home:Admin:ppg" repository="RockyLinux_9"/>   <!-- auto-injected parent path -->
+  <path project="openSUSE.org:RockyLinux:9" repository="standard"/>  <!-- from project.yaml -->
+  <arch>x86_64</arch>
+</repository>
+```
+
+OBS resolves repository paths transitively, so the full chain
+`home:Admin:ppg:17.9` → `home:Admin:ppg` → `home:Admin` → upstream
+is established automatically. This means packages built in a parent project are visible as build dependencies in all subprojects, without any manual path configuration.
+
+The root project (matching `--rootprj`) never gets the parent path injected.
 
 ## Package Configuration (package.yaml)
 
@@ -113,22 +148,35 @@ percona-obs -A <url> -R <rootprj> <command> ...
 ```
 OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-run wizard).
 
-### `deploy [project] [package]`
+### `sync [--force] [project] [package]`
 
-Creates or updates an OBS project/package from the local packaging files (`obs/_service`, `obs/_multibuild`).
+Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then OBS source files are uploaded.
 
 | Call form | Effect |
 |---|---|
-| `deploy` | Deploy all packages under `root/` |
-| `deploy <project>` | Deploy all packages under the project (recursively) |
-| `deploy <top-level-package>` | Deploy a single package directly under `root/` |
-| `deploy <project> <package>` | Deploy a single package under the project |
+| `sync` | Sync all packages under `root/` |
+| `sync <project>` | Sync all packages under the project (recursively) |
+| `sync <top-level-package>` | Sync a single package directly under `root/` |
+| `sync <project> <package>` | Sync a single package under the project |
+
+`--force` bypasses OBS conflict checks — use when the server's copy was modified externally.
 
 Project names use colon notation matching the directory hierarchy (e.g. `ppg:17.9`).
 
+### `build [project] [package]`
+
+Triggers an OBS service run (`runservice`) for one or more packages, causing OBS to re-fetch sources and rebuild.
+
+| Call form | Effect |
+|---|---|
+| `build` | Trigger services for all packages under `root/` |
+| `build <project>` | Trigger services for all packages under the project |
+| `build <top-level-package>` | Trigger service for a single top-level package |
+| `build <project> <package>` | Trigger service for a single package under the project |
+
 ### `config apply [--force] [project] [package]`
 
-Applies `project.yaml` or `package.yaml` configuration to OBS. Updates project meta (title, description, repositories), project build config, and package meta.
+Applies `project.yaml` or `package.yaml` configuration to OBS. Updates project meta (title, description, repositories), project build config, and package meta. Does **not** upload `obs/` source files.
 
 | Call form | Effect |
 |---|---|
@@ -177,4 +225,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Large PG server package | `ppg/17.9/percona-postgresql17/` |
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` |
+| Management script | `percona-obs` (commands: `sync`, `build`, `config apply`) |

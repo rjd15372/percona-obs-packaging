@@ -55,13 +55,25 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def build_project_meta(obs_project_name: str, title: str, description: str, repositories: list) -> str:
-    """Build OBS project metadata XML from project.yaml fields."""
+def build_project_meta(obs_project_name: str, title: str, description: str, repositories: list, rootprj: str) -> str:
+    """Build OBS project metadata XML from project.yaml fields.
+
+    For any project that is not the root project, each repository automatically
+    gets a <path> entry pointing to the same repository in the immediate parent
+    OBS project (one colon-component up). This lets OBS transitively resolve
+    build dependencies up the project hierarchy.
+    """
+    parent_project = obs_project_name.rsplit(":", 1)[0] if obs_project_name != rootprj else None
+
     root = ET.Element("project", name=obs_project_name)
     ET.SubElement(root, "title").text = title
     ET.SubElement(root, "description").text = description
     for repo in repositories:
         repo_elem = ET.SubElement(root, "repository", name=repo["name"])
+        if parent_project:
+            ET.SubElement(repo_elem, "path",
+                          project=parent_project,
+                          repository=repo["name"])
         path_info = repo.get("path", {})
         if path_info:
             ET.SubElement(repo_elem, "path",
@@ -97,14 +109,48 @@ def find_projects(path: Path, obs_project: str):
             yield from find_projects(child, f"{obs_project}:{child.name}")
 
 
-def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path, force: bool = False) -> None:
+def _load_project_config_with_inheritance(project_path: Path) -> dict:
+    """Load project.yaml, inheriting repositories and project-config from ancestors.
+
+    Walks up the directory tree from project_path to REPO_ROOT. For each of
+    'repositories' and 'project-config', if the field is absent or empty in
+    the project's own project.yaml, the value from the nearest ancestor that
+    defines it is used.
+
+    'title', 'description', and 'name' are never inherited.
+    """
+    config = load_yaml(project_path / "project.yaml")
+
+    # Collect ancestor configs from nearest parent up to (and including) REPO_ROOT
+    ancestor_configs: list[dict] = []
+    path = project_path.parent
+    while True:
+        ancestor_configs.append(load_yaml(path / "project.yaml"))
+        if path == REPO_ROOT:
+            break
+        if not path.is_relative_to(REPO_ROOT):
+            break
+        path = path.parent
+
+    for field in ("repositories", "project-config"):
+        if not config.get(field):
+            for ancestor in ancestor_configs:
+                if ancestor.get(field):
+                    config[field] = ancestor[field]
+                    break
+
+    return config
+
+
+def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path, rootprj: str, force: bool = False) -> None:
     """Create or update OBS project metadata and build config from project.yaml."""
-    project_config = load_yaml(project_path / "project.yaml")
+    project_config = _load_project_config_with_inheritance(project_path)
     meta = build_project_meta(
         obs_project_name,
         project_config.get("title", ""),
         project_config.get("description", ""),
         project_config.get("repositories", []),
+        rootprj,
     )
     osc.core.edit_meta(
         metatype="prj",
@@ -154,68 +200,122 @@ def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs
         print(f"Uploaded {filepath.name} to {obs_project_name}/{package_name}")
 
 
-def cmd_deploy(args):
-    """Create or update the OBS project and/or package from local packaging files.
+def _resolve_targets(args) -> list[tuple[str, Path]]:
+    """Resolve the list of (obs_project, package_path) targets from CLI args.
 
-    Supported call forms:
-      deploy                        — deploy everything under root/
-      deploy <project>              — deploy all packages under a project
-      deploy <top-level-package>    — deploy a single package with no project grouping
-      deploy <project> <package>    — deploy a single package under a project
+    args must have: rootprj, project (optional), package (optional).
     """
     if args.project is None:
-        # No args: deploy everything under root
         targets = list(find_packages(REPO_ROOT, args.rootprj))
         if not targets:
             print("error: no packages found under root", file=sys.stderr)
             sys.exit(1)
-    else:
-        first_path = resolve_project_path(args.project)
-        if not first_path.is_dir():
-            print(f"error: '{args.project}' not found under root/", file=sys.stderr)
+        return targets
+
+    first_path = resolve_project_path(args.project)
+    if not first_path.is_dir():
+        print(f"error: '{args.project}' not found under root/", file=sys.stderr)
+        sys.exit(1)
+
+    if is_package(first_path):
+        # First arg is a top-level package, not a project
+        if args.package is not None:
+            print(f"error: '{args.project}' is a package; a sub-package argument cannot be given", file=sys.stderr)
             sys.exit(1)
+        return [(args.rootprj, first_path)]
 
-        if is_package(first_path):
-            # First arg is a top-level package, not a project
-            if args.package is not None:
-                print(f"error: '{args.project}' is a package; a sub-package argument cannot be given", file=sys.stderr)
-                sys.exit(1)
-            targets = [(args.rootprj, first_path)]
-        else:
-            # First arg is a project
-            full_obs_project = f"{args.rootprj}:{args.project}"
-            if args.package is not None:
-                package_path = first_path / args.package
-                if not package_path.is_dir():
-                    print(f"error: package directory not found: {package_path}", file=sys.stderr)
-                    sys.exit(1)
-                if not is_package(package_path):
-                    print(f"error: '{args.package}' is not a package (no obs/ directory found inside)", file=sys.stderr)
-                    sys.exit(1)
-                targets = [(full_obs_project, package_path)]
-            else:
-                targets = list(find_packages(first_path, full_obs_project))
-                if not targets:
-                    print(f"error: no packages found under project '{args.project}'", file=sys.stderr)
-                    sys.exit(1)
+    # First arg is a project
+    full_obs_project = f"{args.rootprj}:{args.project}"
+    if args.package is not None:
+        package_path = first_path / args.package
+        if not package_path.is_dir():
+            print(f"error: package directory not found: {package_path}", file=sys.stderr)
+            sys.exit(1)
+        if not is_package(package_path):
+            print(f"error: '{args.package}' is not a package (no obs/ directory found inside)", file=sys.stderr)
+            sys.exit(1)
+        return [(full_obs_project, package_path)]
 
+    targets = list(find_packages(first_path, full_obs_project))
+    if not targets:
+        print(f"error: no packages found under project '{args.project}'", file=sys.stderr)
+        sys.exit(1)
+    return targets
+
+
+def _iter_project_chain(obs_project: str, project_path: Path):
+    """Yield (raw_obs_project, obs_project_name, path) from root down to project_path.
+
+    Walks up from project_path to REPO_ROOT, then yields in reverse (root-first)
+    so every ancestor project level is visited before the immediate project.
+
+    raw_obs_project is the path-derived key used for deduplication.
+    obs_project_name may differ if project.yaml contains a 'name' override.
+    """
+    chain = []
+    path = project_path
+    proj = obs_project
+    while True:
+        config = load_yaml(path / "project.yaml")
+        obs_name = config.get("name") or proj
+        chain.append((proj, obs_name, path))
+        if path == REPO_ROOT:
+            break
+        if not path.is_relative_to(REPO_ROOT):
+            break
+        path = path.parent
+        proj = proj.rsplit(":", 1)[0]
+    yield from reversed(chain)
+
+
+def cmd_sync(args):
+    """Sync local packaging files to OBS, creating or updating projects and packages.
+
+    Supported call forms:
+      sync                        — sync everything under root/
+      sync <project>              — sync all packages under a project
+      sync <top-level-package>    — sync a single package with no project grouping
+      sync <project> <package>    — sync a single package under a project
+    """
+    targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
     seen_projects: set = set()
 
     for obs_project, package_path in targets:
         project_path = package_path.parent
-        project_config = load_yaml(project_path / "project.yaml")
-        obs_project_name = project_config.get("name") or obs_project
+        obs_project_name = obs_project
 
-        if obs_project not in seen_projects:
-            _apply_project_config(apiurl, obs_project_name, project_path)
-            seen_projects.add(obs_project)
+        for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
+            obs_project_name = prj_name
+            if raw_proj not in seen_projects:
+                _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
+                seen_projects.add(raw_proj)
 
-        _apply_package_config(apiurl, obs_project_name, package_path.name, package_path)
+        _apply_package_config(apiurl, obs_project_name, package_path.name, package_path, force=args.force)
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
             _upload_obs_files(apiurl, obs_project_name, package_path.name, obs_dir)
+
+
+def cmd_build(args):
+    """Trigger an OBS service run for one or more packages.
+
+    Supported call forms:
+      build                        — trigger services for all packages under root/
+      build <project>              — trigger services for all packages under a project
+      build <top-level-package>    — trigger service for a single top-level package
+      build <project> <package>    — trigger service for a single package under a project
+    """
+    targets = _resolve_targets(args)
+    apiurl = osc.conf.config["apiurl"]
+
+    for obs_project, package_path in targets:
+        project_path = package_path.parent
+        project_config = load_yaml(project_path / "project.yaml")
+        obs_project_name = project_config.get("name") or obs_project
+        osc.core.runservice(apiurl, obs_project_name, package_path.name)
+        print(f"Triggered service run: {obs_project_name}/{package_path.name}")
 
 
 def cmd_config_apply(args):
@@ -255,7 +355,7 @@ def cmd_config_apply(args):
             sys.exit(1)
         _apply_package_config(apiurl, obs_project_name, package_path.name, package_path, force=args.force)
     else:
-        _apply_project_config(apiurl, obs_project_name, project_path, force=args.force)
+        _apply_project_config(apiurl, obs_project_name, project_path, args.rootprj, force=args.force)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -272,30 +372,55 @@ def build_parser() -> argparse.ArgumentParser:
         "-R", "--rootprj",
         metavar="PROJECT",
         required=True,
-        help="OBS root project under which all projects are deployed (e.g. home:Admin)",
+        help="OBS root project under which all projects are deployed (e.g. home:username)",
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
     subparsers.required = True
 
-    deploy_parser = subparsers.add_parser(
-        "deploy",
-        help="Create or update a project/package on OBS from local packaging files.",
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="Sync local packaging files to OBS, creating or updating projects and packages.",
     )
-    deploy_parser.add_argument(
+    sync_parser.add_argument(
         "project",
         nargs="?",
         default=None,
         help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
-             "If omitted, all packages and projects under root/ are deployed.",
+             "If omitted, all packages and projects under root/ are synced.",
     )
-    deploy_parser.add_argument(
+    sync_parser.add_argument(
         "package",
         nargs="?",
         default=None,
-        help="Package name to deploy. If omitted, all packages and subprojects under the project are deployed.",
+        help="Package name to sync. If omitted, all packages and subprojects under the project are synced.",
     )
-    deploy_parser.set_defaults(func=cmd_deploy)
+    sync_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force update even if OBS reports a conflict.",
+    )
+    sync_parser.set_defaults(func=cmd_sync)
+
+    build_parser_ = subparsers.add_parser(
+        "build",
+        help="Trigger an OBS service run for one or more packages.",
+    )
+    build_parser_.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
+             "If omitted, services are triggered for all packages under root/.",
+    )
+    build_parser_.add_argument(
+        "package",
+        nargs="?",
+        default=None,
+        help="Package name. If omitted, services are triggered for all packages under the project.",
+    )
+    build_parser_.set_defaults(func=cmd_build)
 
     config_parser = subparsers.add_parser(
         "config",
