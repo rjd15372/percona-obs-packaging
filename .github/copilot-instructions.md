@@ -174,13 +174,13 @@ Both `sync` and `config apply` compare the desired state against what OBS curren
 
 - **Project / package meta** — the managed fields (title, description, repositories) are compared as XML; OBS-managed fields (ACL entries, person/group/lock) are ignored.
 - **Project config** — the raw string is compared after stripping leading/trailing whitespace.
-- **`obs/` files** — each file's MD5 is compared to the MD5 returned by the OBS source directory listing. Only changed files are uploaded.
+- **`obs/` files** — each file's MD5 is compared to the MD5 returned by the OBS source directory listing. Only changed files are uploaded. Files present on OBS but absent locally are deleted. All uploads and deletions are committed as a single OBS source revision.
 
 If nothing changed, no API write call is made and no output line is printed for that item. Use `--force` to bypass comparison and always write.
 
 ### `sync [--force] [--dirty] [--dry-run] [--dry-run-remote] [--no-services] [-m MSG] [project] [package]`
 
-Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then `obs/` source files are uploaded as a **single OBS source revision**.
+Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then `obs/` source files are synced as a **single OBS source revision** — new and changed files are uploaded, files removed locally are deleted from OBS.
 
 | Call form | Effect |
 |---|---|

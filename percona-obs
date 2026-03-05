@@ -554,18 +554,22 @@ def _upload_obs_files(
     """Upload changed files from obs_dir to OBS as a single committed revision.
 
     Each changed file is staged with ?rev=upload (no revision created yet).
-    After all files are staged, a single commit is issued, optionally with a
-    message. This produces one OBS source revision per sync instead of one
-    per file, and skips the commit entirely when nothing changed.
+    Files present on OBS but absent locally are deleted with ?rev=upload.
+    After all files are staged/deleted, a single commit is issued, optionally
+    with a message. This produces one OBS source revision per sync instead of
+    one per file, and skips the commit entirely when nothing changed.
     With --dry-run, read-only OBS calls are made to compute the diff but no
     files are uploaded or committed.
     """
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
     changed: list[str] = []
+    removed: list[str] = []
+    local_files: set[str] = set()
 
     for filepath in sorted(obs_dir.iterdir()):
         if not filepath.is_file():
             continue
+        local_files.add(filepath.name)
         local_md5 = hashlib.md5(filepath.read_bytes()).hexdigest()
         if obs_md5s.get(filepath.name) == local_md5:
             logger.debug(f"{filepath.name} unchanged (md5 match)")
@@ -580,29 +584,45 @@ def _upload_obs_files(
             )
             osc.connection.http_PUT(url, file=str(filepath))
 
-    if not changed:
+    for obs_name in sorted(obs_md5s.keys() - local_files):
+        removed.append(obs_name)
+        if not dry_run:
+            logger.debug(f"deleting {obs_name} → {obs_project_name}/{package_name}")
+            url = osc.core.makeurl(
+                apiurl,
+                ["source", obs_project_name, package_name, obs_name],
+                query={"rev": "upload"},
+            )
+            osc.connection.http_DELETE(url)
+
+    all_changed = changed + removed
+    if not all_changed:
         logger.debug(f"no files changed: {obs_project_name}/{package_name}")
         return
 
     if dry_run:
-        _print_dry(f"{len(changed)} files  {obs_project_name}/{package_name}")
+        _print_dry(f"{len(all_changed)} files  {obs_project_name}/{package_name}")
         for name in changed:
             print(f"      |_ {name}")
+        for name in removed:
+            print(f"      |_ - {name}")
         return
 
     commit_query: dict = {"cmd": "commit"}
     if message:
         commit_query["comment"] = message
     logger.debug(
-        f"committing {len(changed)} file(s): {obs_project_name}/{package_name}"
+        f"committing {len(changed)} file(s), {len(removed)} deletion(s): {obs_project_name}/{package_name}"
     )
     url = osc.core.makeurl(
         apiurl, ["source", obs_project_name, package_name], query=commit_query
     )
     osc.connection.http_POST(url)
-    _print_change(f"{len(changed)} files  {obs_project_name}/{package_name}")
+    _print_change(f"{len(all_changed)} files  {obs_project_name}/{package_name}")
     for name in changed:
         print(f"      |_ {name}")
+    for name in removed:
+        print(f"      |_ - {name}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
