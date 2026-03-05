@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -143,8 +144,93 @@ def _load_project_config_with_inheritance(project_path: Path) -> dict:
     return config
 
 
+def _decode_obs_response(raw) -> str:
+    """Normalise the various return types osc functions use (bytes, list[bytes], str)."""
+    if isinstance(raw, (list, tuple)):
+        raw = b"".join(raw) if raw and isinstance(raw[0], bytes) else "".join(raw)
+    if isinstance(raw, bytes):
+        return raw.decode()
+    return str(raw) if raw else ""
+
+
+def _fetch_obs_file_md5s(apiurl: str, obs_project_name: str, package_name: str) -> dict[str, str]:
+    """Return {filename: md5} for files currently stored in the OBS package source.
+
+    Returns an empty dict if the package does not yet exist or on any error,
+    which causes all local files to be uploaded unconditionally.
+    """
+    url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name])
+    try:
+        response = osc.connection.http_GET(url)
+        root = ET.fromstring(response.read())
+        return {
+            entry.get("name", ""): entry.get("md5", "")
+            for entry in root.findall("entry")
+            if entry.get("name")
+        }
+    except Exception:
+        return {}
+
+
+def _child_text(elem: ET.Element, tag: str) -> str:
+    child = elem.find(tag)
+    return (child.text or "").strip() if child is not None else ""
+
+
+def _project_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
+    """Return True if the title, description, and repositories we manage are identical.
+
+    Ignores OBS-managed elements (person, group, lock, link) so that ACL entries
+    added via the web UI do not cause spurious updates.
+    """
+    try:
+        current = ET.fromstring(current_bytes)
+        desired = ET.fromstring(desired_xml)
+    except ET.ParseError:
+        return False
+
+    if _child_text(current, "title") != _child_text(desired, "title"):
+        return False
+    if _child_text(current, "description") != _child_text(desired, "description"):
+        return False
+
+    current_repos = {r.get("name"): r for r in current.findall("repository")}
+    desired_repos = {r.get("name"): r for r in desired.findall("repository")}
+    if set(current_repos) != set(desired_repos):
+        return False
+
+    for name, d_repo in desired_repos.items():
+        c_repo = current_repos[name]
+        d_paths = [(p.get("project"), p.get("repository")) for p in d_repo.findall("path")]
+        c_paths = [(p.get("project"), p.get("repository")) for p in c_repo.findall("path")]
+        if d_paths != c_paths:
+            return False
+        if [a.text for a in d_repo.findall("arch")] != [a.text for a in c_repo.findall("arch")]:
+            return False
+
+    return True
+
+
+def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
+    """Return True if the title and description we manage are identical to what OBS has."""
+    try:
+        current = ET.fromstring(current_bytes)
+        desired = ET.fromstring(desired_xml)
+    except ET.ParseError:
+        return False
+
+    return (
+        _child_text(current, "title") == _child_text(desired, "title")
+        and _child_text(current, "description") == _child_text(desired, "description")
+    )
+
+
 def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path, rootprj: str, force: bool = False) -> None:
-    """Create or update OBS project metadata and build config from project.yaml."""
+    """Create or update OBS project metadata and build config from project.yaml.
+
+    Skips the API call when the content already matches what OBS has, unless
+    --force is given (which bypasses both the local comparison and OBS conflict checks).
+    """
     project_config = _load_project_config_with_inheritance(project_path)
     meta = build_project_meta(
         obs_project_name,
@@ -153,27 +239,47 @@ def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path
         project_config.get("repositories", []),
         rootprj,
     )
-    osc.core.edit_meta(
-        metatype="prj",
-        path_args=(obs_project_name,),
-        data=[meta],
-        force=force,
-        apiurl=apiurl,
-    )
-    print(f"Updated project meta: {obs_project_name}")
+
+    # --- project meta ---
+    if not force:
+        try:
+            current = _decode_obs_response(osc.core.show_project_meta(apiurl, obs_project_name)).encode()
+            if _project_meta_subset_equal(current, meta):
+                print(f"Project meta unchanged: {obs_project_name}")
+            else:
+                osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=False, apiurl=apiurl)
+                print(f"Updated project meta: {obs_project_name}")
+        except Exception:
+            osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=False, apiurl=apiurl)
+            print(f"Updated project meta: {obs_project_name}")
+    else:
+        osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=True, apiurl=apiurl)
+        print(f"Updated project meta: {obs_project_name}")
+
+    # --- project config ---
     project_config_str = project_config.get("project-config") or ""
-    osc.core.edit_meta(
-        metatype="prjconf",
-        path_args=(obs_project_name,),
-        data=[project_config_str],
-        force=force,
-        apiurl=apiurl,
-    )
-    print(f"Updated project config: {obs_project_name}")
+    if not force:
+        try:
+            current_conf = _decode_obs_response(osc.core.show_project_conf(apiurl, obs_project_name))
+            if current_conf.strip() == project_config_str.strip():
+                print(f"Project config unchanged: {obs_project_name}")
+            else:
+                osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=False, apiurl=apiurl)
+                print(f"Updated project config: {obs_project_name}")
+        except Exception:
+            osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=False, apiurl=apiurl)
+            print(f"Updated project config: {obs_project_name}")
+    else:
+        osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=True, apiurl=apiurl)
+        print(f"Updated project config: {obs_project_name}")
 
 
 def _apply_package_config(apiurl: str, obs_project_name: str, package_name: str, package_path: Path, force: bool = False) -> None:
-    """Create or update OBS package metadata from package.yaml."""
+    """Create or update OBS package metadata from package.yaml.
+
+    Skips the API call when the content already matches what OBS has, unless
+    --force is given.
+    """
     package_config = load_yaml(package_path / "package.yaml")
     meta = build_package_meta(
         obs_project_name,
@@ -181,20 +287,34 @@ def _apply_package_config(apiurl: str, obs_project_name: str, package_name: str,
         package_config.get("title", ""),
         package_config.get("description", ""),
     )
-    osc.core.edit_meta(
-        metatype="pkg",
-        path_args=(obs_project_name, package_name),
-        data=[meta],
-        force=force,
-        apiurl=apiurl,
-    )
+
+    if not force:
+        try:
+            current = _decode_obs_response(osc.core.show_package_meta(apiurl, obs_project_name, package_name)).encode()
+            if _package_meta_subset_equal(current, meta):
+                print(f"Package meta unchanged: {obs_project_name}/{package_name}")
+                return
+        except Exception:
+            pass
+
+    osc.core.edit_meta(metatype="pkg", path_args=(obs_project_name, package_name), data=[meta], force=force, apiurl=apiurl)
     print(f"Updated package meta: {obs_project_name}/{package_name}")
 
 
 def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs_dir: Path) -> None:
-    """Upload all files in obs_dir to the OBS package source."""
+    """Upload files from obs_dir to the OBS package source, skipping unchanged files.
+
+    MD5 checksums reported by OBS are compared against local file checksums before
+    each upload. Files whose checksum already matches are skipped, preventing OBS
+    from triggering unnecessary service runs.
+    """
+    obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
     for filepath in sorted(obs_dir.iterdir()):
         if not filepath.is_file():
+            continue
+        local_md5 = hashlib.md5(filepath.read_bytes()).hexdigest()
+        if obs_md5s.get(filepath.name) == local_md5:
+            print(f"Unchanged {filepath.name} in {obs_project_name}/{package_name} (skipped)")
             continue
         url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name, filepath.name])
         osc.connection.http_PUT(url, file=str(filepath))
@@ -309,7 +429,8 @@ def cmd_sync(args):
       sync <top-level-package>    — sync a single package with no project grouping
       sync <project> <package>    — sync a single package under a project
     """
-    _check_git_clean()
+    if not args.dirty:
+        _check_git_clean()
     targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
     seen_projects: set = set()
@@ -359,7 +480,8 @@ def cmd_config_apply(args):
       config apply <project>              — apply config for a specific project
       config apply <project> <package>    — apply config for a specific package under a project
     """
-    _check_git_clean()
+    if not args.dirty:
+        _check_git_clean()
     apiurl = osc.conf.config["apiurl"]
 
     if args.project is None:
@@ -435,6 +557,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Force update even if OBS reports a conflict.",
     )
+    sync_parser.add_argument(
+        "--dirty",
+        action="store_true",
+        default=False,
+        help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
+    )
     sync_parser.set_defaults(func=cmd_sync)
 
     build_parser_ = subparsers.add_parser(
@@ -485,6 +613,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Force update even if OBS reports a conflict.",
+    )
+    config_apply_parser.add_argument(
+        "--dirty",
+        action="store_true",
+        default=False,
+        help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
     )
     config_apply_parser.set_defaults(func=cmd_config_apply)
 
