@@ -5,7 +5,7 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*.dsc</param>
-    <param name="subdir">postgresql/percona-pg-telemetry/debian</param>
+    <param name="subdir">root/percona-telemetry-agent/debian</param>
     <param name="filename">debian</param>
   </service>
 
@@ -15,24 +15,27 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*</param>
-    <param name="subdir">postgresql/percona-pg-telemetry/rpm</param>
+    <param name="subdir">root/percona-telemetry-agent/rpm</param>
     <param name="filename">rpm</param>
   </service>
 
   <service name="obs_scm">
-    <param name="url">https://github.com/percona/percona_pg_telemetry.git</param>
+    <param name="url">https://github.com/percona/telemetry-agent.git</param>
     <param name="scm">git</param>
-    <param name="revision">release-1.2.0</param>
-    <param name="version">1.2.0</param>
-    <param name="filename">percona-pg-telemetry</param>
+    <param name="revision">main</param>
+    <param name="versionformat">@PARENT_TAG@</param>
+    <param name="versionrewrite-pattern">v(.*)</param>
+    <param name="filename">percona-telemetry-agent</param>
   </service>
 
   <service mode="buildtime" name="tar" />
-
   <service mode="buildtime" name="recompress">
     <param name="file">*.tar</param>
     <param name="compression">gz</param>
   </service>
-
   <service mode="buildtime" name="set_version" />
+  <service name="go_modules" mode="manual">
+    <param name="archive">*percona-telemetry-agent-*</param>
+  </service>
 </services>
+

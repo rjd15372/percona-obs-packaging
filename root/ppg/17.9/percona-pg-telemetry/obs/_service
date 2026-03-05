@@ -5,7 +5,7 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*.dsc</param>
-    <param name="subdir">postgresql/percona-postgresql-common/debian</param>
+    <param name="subdir">root/ppg/17.9/percona-pg-telemetry/debian</param>
     <param name="filename">debian</param>
   </service>
 
@@ -15,17 +15,16 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*</param>
-    <param name="subdir">postgresql/percona-postgresql-common/rpm</param>
+    <param name="subdir">root/ppg/17.9/percona-pg-telemetry/rpm</param>
     <param name="filename">rpm</param>
   </service>
 
   <service name="obs_scm">
-    <param name="url">https://salsa.debian.org/postgresql/postgresql-common.git</param>
+    <param name="url">https://github.com/percona/percona_pg_telemetry.git</param>
     <param name="scm">git</param>
-    <param name="revision">debian/289</param>
-    <param name="versionformat">@PARENT_TAG@</param>
-    <param name="versionrewrite-pattern">debian/(.*)</param>
-    <param name="filename">percona-postgresql-common</param>
+    <param name="revision">release-1.2.0</param>
+    <param name="version">1.2.0</param>
+    <param name="filename">percona-pg-telemetry</param>
   </service>
 
   <service mode="buildtime" name="tar" />
@@ -37,4 +36,3 @@
 
   <service mode="buildtime" name="set_version" />
 </services>
-

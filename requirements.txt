@@ -1,0 +1,6 @@
+osc
+pyyaml
+
+# development tools
+black
+pyright

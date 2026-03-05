@@ -6,7 +6,7 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*.dsc</param>
-    <param name="subdir">postgresql/etcd/debian</param>
+    <param name="subdir">root/ppg/17.9/etcd/debian</param>
     <param name="filename">debian</param>
   </service>
 
@@ -16,7 +16,7 @@
     <param name="revision">main</param>
     <param name="version">_none_</param>
     <param name="extract">*</param>
-    <param name="subdir">postgresql/etcd/rpm</param>
+    <param name="subdir">root/ppg/17.9/etcd/rpm</param>
     <param name="filename">rpm</param>
   </service>
 
