@@ -306,11 +306,13 @@ Create `obs/_aggregate` pointing to the source project. When the source is on a 
 ### Step 5 — Write `package.yaml`
 
 ```yaml
-title: <title from _meta>
+title: "..."        # quote if the value contains a colon
 description: |
   <description from _meta, reflowed to ~80 chars per line>
 ```
 Omit `package.yaml` entirely if both `<title>` and `<description>` are empty.
+
+**Always quote the `title` value with double quotes if it contains a colon (`:`) — YAML treats an unquoted colon as a mapping separator and will fail to parse.**
 
 ### Notes
 - Use the OBS package name unchanged as the local directory name.

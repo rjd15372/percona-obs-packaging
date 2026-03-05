@@ -1,0 +1,5 @@
+<aggregatelist>
+  <aggregate project="openSUSE.org:openSUSE:Tools">
+    <package>obs-service-set_version</package>
+  </aggregate>
+</aggregatelist>
