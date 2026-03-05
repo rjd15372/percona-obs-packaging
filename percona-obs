@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -20,6 +21,45 @@ logger = logging.getLogger("percona-obs")
 
 # Root of the packaging tree, relative to this script
 REPO_ROOT = Path(__file__).parent / "root"
+
+# ---------------------------------------------------------------------------
+# Colour helpers
+# ---------------------------------------------------------------------------
+# Colours are disabled when stdout is not a TTY or when NO_COLOR is set
+# (https://no-color.org/).
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_CYAN = "\033[36m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RESET = "\033[0m"
+
+
+def _col(code: str, text: str) -> str:
+    """Wrap *text* in an ANSI escape sequence when colour output is enabled."""
+    return f"{code}{text}{_RESET}" if _USE_COLOR else text
+
+
+def _print_change(text: str) -> None:
+    """Print a '  + ...' line for a change applied to OBS."""
+    print(f"  {_col(_GREEN, '+')} {text}")
+
+
+def _print_dry(text: str) -> None:
+    """Print a '  ~ ...' line for a simulated change (dry-run)."""
+    print(f"  {_col(_YELLOW, '~')} {text}")
+
+
+def _print_action(text: str) -> None:
+    """Print a '  > ...' line for a triggered action."""
+    print(f"  {_col(_CYAN, '>')} {text}")
+
+
+def _print_ok(text: str) -> None:
+    """Print a '  ✔  ...' success line."""
+    print(f"  {_col(_GREEN + _BOLD, '✔')}  {text}")
 
 
 def resolve_project_path(project: str) -> Path:
@@ -308,7 +348,7 @@ def _apply_project_config(
             else:
                 logger.debug(f"updating project meta: {obs_project_name}")
                 if dry_run:
-                    print(f"  ~ project meta  {obs_project_name}")
+                    _print_dry(f"project meta  {obs_project_name}")
                 else:
                     osc.core.edit_meta(
                         metatype="prj",
@@ -317,11 +357,11 @@ def _apply_project_config(
                         force=False,
                         apiurl=apiurl,
                     )
-                    print(f"  + project meta  {obs_project_name}")
+                    _print_change(f"project meta  {obs_project_name}")
         except Exception:
             logger.debug(f"creating project meta: {obs_project_name}")
             if dry_run:
-                print(f"  ~ project meta  {obs_project_name}")
+                _print_dry(f"project meta  {obs_project_name}")
             else:
                 osc.core.edit_meta(
                     metatype="prj",
@@ -330,11 +370,11 @@ def _apply_project_config(
                     force=False,
                     apiurl=apiurl,
                 )
-                print(f"  + project meta  {obs_project_name}")
+                _print_change(f"project meta  {obs_project_name}")
     else:
         logger.debug(f"force-updating project meta: {obs_project_name}")
         if dry_run:
-            print(f"  ~ project meta  {obs_project_name}")
+            _print_dry(f"project meta  {obs_project_name}")
         else:
             osc.core.edit_meta(
                 metatype="prj",
@@ -343,7 +383,7 @@ def _apply_project_config(
                 force=True,
                 apiurl=apiurl,
             )
-            print(f"  + project meta  {obs_project_name}")
+            _print_change(f"project meta  {obs_project_name}")
 
     # --- project config ---
     project_config_str = project_config.get("project-config") or ""
@@ -358,7 +398,7 @@ def _apply_project_config(
             else:
                 logger.debug(f"updating project config: {obs_project_name}")
                 if dry_run:
-                    print(f"  ~ project config  {obs_project_name}")
+                    _print_dry(f"project config  {obs_project_name}")
                 else:
                     osc.core.edit_meta(
                         metatype="prjconf",
@@ -367,11 +407,11 @@ def _apply_project_config(
                         force=False,
                         apiurl=apiurl,
                     )
-                    print(f"  + project config  {obs_project_name}")
+                    _print_change(f"project config  {obs_project_name}")
         except Exception:
             logger.debug(f"creating project config: {obs_project_name}")
             if dry_run:
-                print(f"  ~ project config  {obs_project_name}")
+                _print_dry(f"project config  {obs_project_name}")
             else:
                 osc.core.edit_meta(
                     metatype="prjconf",
@@ -380,11 +420,11 @@ def _apply_project_config(
                     force=False,
                     apiurl=apiurl,
                 )
-                print(f"  + project config  {obs_project_name}")
+                _print_change(f"project config  {obs_project_name}")
     else:
         logger.debug(f"force-updating project config: {obs_project_name}")
         if dry_run:
-            print(f"  ~ project config  {obs_project_name}")
+            _print_dry(f"project config  {obs_project_name}")
         else:
             osc.core.edit_meta(
                 metatype="prjconf",
@@ -393,7 +433,7 @@ def _apply_project_config(
                 force=True,
                 apiurl=apiurl,
             )
-            print(f"  + project config  {obs_project_name}")
+            _print_change(f"project config  {obs_project_name}")
 
 
 def _apply_package_config(
@@ -435,7 +475,7 @@ def _apply_package_config(
     action = "force-updating" if force else "updating"
     logger.debug(f"{action} package meta: {obs_project_name}/{package_name}")
     if dry_run:
-        print(f"  ~ package  {obs_project_name}/{package_name}")
+        _print_dry(f"package  {obs_project_name}/{package_name}")
     else:
         osc.core.edit_meta(
             metatype="pkg",
@@ -444,7 +484,7 @@ def _apply_package_config(
             force=force,
             apiurl=apiurl,
         )
-        print(f"  + package  {obs_project_name}/{package_name}")
+        _print_change(f"package  {obs_project_name}/{package_name}")
 
 
 def _upload_obs_files(
@@ -489,7 +529,7 @@ def _upload_obs_files(
         return
 
     if dry_run:
-        print(f"  ~ {len(changed)} files  {obs_project_name}/{package_name}")
+        _print_dry(f"{len(changed)} files  {obs_project_name}/{package_name}")
         return
 
     commit_query: dict = {"cmd": "commit"}
@@ -502,7 +542,7 @@ def _upload_obs_files(
         apiurl, ["source", obs_project_name, package_name], query=commit_query
     )
     osc.connection.http_POST(url)
-    print(f"  + {len(changed)} files  {obs_project_name}/{package_name}")
+    _print_change(f"{len(changed)} files  {obs_project_name}/{package_name}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -743,7 +783,7 @@ def cmd_sync(args):
             )
 
     suffix = " (dry run)" if args.dry_run else ""
-    print(f"  ✔  sync successful{suffix}")
+    _print_ok(f"sync successful{suffix}")
 
 
 def cmd_build(args):
@@ -764,9 +804,9 @@ def cmd_build(args):
         obs_project_name = project_config.get("name") or obs_project
         logger.debug(f"triggering service run: {obs_project_name}/{package_path.name}")
         osc.core.runservice(apiurl, obs_project_name, package_path.name)
-        print(f"  > service  {obs_project_name}/{package_path.name}")
+        _print_action(f"service  {obs_project_name}/{package_path.name}")
 
-    print("  ✔  build successful")
+    _print_ok("build successful")
 
 
 def cmd_config_apply(args):
@@ -832,7 +872,7 @@ def cmd_config_apply(args):
         )
 
     suffix = " (dry run)" if args.dry_run else ""
-    print(f"  ✔  config apply successful{suffix}")
+    _print_ok(f"config apply successful{suffix}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -981,7 +1021,7 @@ def main():
 
     if args.verbose:
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter("  · %(message)s"))
+        handler.setFormatter(logging.Formatter(f"  {_col(_DIM, '·')} %(message)s"))
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 

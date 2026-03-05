@@ -150,15 +150,15 @@ OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-ru
 
 ### Output format
 
-`percona-obs` prints only the actions that produce an actual change. Each line has a two-character prefix:
+`percona-obs` prints only the actions that produce an actual change. Each line has a two-character prefix, color-coded when stdout is a TTY (set `NO_COLOR=1` to disable):
 
-| Prefix | Meaning |
-|---|---|
-| `  + ` | Change applied to OBS |
-| `  ~ ` | Would change (dry-run mode only — nothing written) |
-| `  > ` | Service triggered |
-| `  ✔ ` | Command completed successfully |
-| `  · ` | Debug message (only shown with `--verbose`) |
+| Prefix | Color | Meaning |
+|---|---|---|
+| `  + ` | green | Change applied to OBS |
+| `  ~ ` | yellow | Would change (dry-run mode only — nothing written) |
+| `  > ` | cyan | Service triggered |
+| `  ✔ ` | bold green | Command completed successfully |
+| `  · ` | dim | Debug message (only shown with `--verbose`) |
 
 ### Git safeguard
 
