@@ -171,6 +171,15 @@ def _decode_obs_response(raw) -> str:
     return str(raw) if raw else ""
 
 
+def _obs_project_exists(apiurl: str, obs_project_name: str) -> bool:
+    """Return True if the OBS project already exists, False on any error (e.g. 404)."""
+    try:
+        osc.core.show_project_meta(apiurl, obs_project_name)
+        return True
+    except Exception:
+        return False
+
+
 def _fetch_obs_file_md5s(apiurl: str, obs_project_name: str, package_name: str) -> dict[str, str]:
     """Return {filename: md5} for files currently stored in the OBS package source.
 
@@ -456,8 +465,8 @@ def _check_git_clean() -> None:
 def _generate_sync_message(dirty: bool) -> str:
     """Build the default OBS commit message from the current git state.
 
-    Normal:  percona-obs sync based on git commit <SHA1> from <branch> of <remote_url>
-    Dirty:   percona-obs sync based on git commit <SHA1> from local changes of <hostname>
+    Normal:  sync: <branch>@<short-sha> (<remote_url>)
+    Dirty:   sync: <branch>@<short-sha> (local changes on <hostname>)
     """
     repo_root = Path(__file__).parent
 
@@ -465,13 +474,12 @@ def _generate_sync_message(dirty: bool) -> str:
         r = subprocess.run(["git"] + list(args), capture_output=True, text=True, cwd=repo_root)
         return r.stdout.strip() if r.returncode == 0 else "unknown"
 
-    sha1 = _git("rev-parse", "HEAD")
+    short_sha = _git("rev-parse", "--short", "HEAD")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
 
     if dirty:
         hostname = socket.gethostname()
-        return f"percona-obs sync based on git commit {sha1} from local changes of {hostname}"
-
-    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        return f"sync: {branch}@{short_sha} (local changes on {hostname})"
 
     # Discover which remote contains HEAD rather than assuming "origin".
     # `git branch -r --contains HEAD` returns lines like "  origin/main", "  upstream/main".
@@ -484,7 +492,7 @@ def _generate_sync_message(dirty: bool) -> str:
             break
     remote_url = _git("remote", "get-url", remote_name) if remote_name != "unknown" else "unknown"
 
-    return f"percona-obs sync based on git commit {sha1} from {branch} of {remote_url}"
+    return f"sync: {branch}@{short_sha} ({remote_url})"
 
 
 def cmd_sync(args):
@@ -506,11 +514,27 @@ def cmd_sync(args):
         project_path = package_path.parent
         obs_project_name = obs_project
 
-        for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
-            obs_project_name = prj_name
-            if raw_proj not in seen_projects:
-                _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
-                seen_projects.add(raw_proj)
+        if args.package is not None:
+            # User targeted a specific package — resolve obs_project_name and skip the
+            # chain walk if the project already exists on OBS (fast path, one GET).
+            # If the project does not exist yet, fall back to walking the full chain
+            # so the hierarchy is created before the package is attempted.
+            project_config = load_yaml(project_path / "project.yaml")
+            obs_project_name = project_config.get("name") or obs_project
+            if not _obs_project_exists(apiurl, obs_project_name):
+                for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
+                    obs_project_name = prj_name
+                    if raw_proj not in seen_projects:
+                        _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
+                        seen_projects.add(raw_proj)
+        else:
+            # Syncing a whole project or everything — ensure the full project hierarchy
+            # is created/updated first (seen_projects deduplicates across packages).
+            for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
+                obs_project_name = prj_name
+                if raw_proj not in seen_projects:
+                    _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
+                    seen_projects.add(raw_proj)
 
         _apply_package_config(apiurl, obs_project_name, package_path.name, package_path, force=args.force)
 
