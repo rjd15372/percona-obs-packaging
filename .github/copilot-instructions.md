@@ -241,6 +241,63 @@ Options:
 3. `debian/rules` version extraction pattern reads `/usr/src/packages/SOURCES/*.obsinfo`
 4. Ensure `vendor.tar.gz` is listed in `debian/debian.dsc`'s `Debtransform-Files-Tar`
 
+## Importing an Existing OBS Package
+
+When given an OBS package URL and a target location within `root/`, follow these exact steps:
+
+### Inputs
+- **OBS package URL** — the web UI URL, e.g. `http://192.168.1.103:3000/package/show/home:Admin/obs-service-tar_scm`
+- **Target location** — directory relative to `root/` where the package should land (e.g. `root/` for a top-level package, `root/ppg/17.9/` for a subproject package)
+
+### Steps
+
+**1. Parse the URL**
+Extract from the URL:
+- `apiurl`: the scheme+host+port (`http://192.168.1.103:3000`)
+- `obs_project`: the project name (`home:Admin`)
+- `package_name`: the package name (`obs-service-tar_scm`) — this becomes the local directory name
+
+**2. Fetch package metadata**
+```sh
+osc -A <apiurl> api /source/<obs_project>/<package_name>/_meta
+```
+Extract `<title>` and `<description>` from the returned XML. These populate `package.yaml`.
+
+**3. List package source files**
+```sh
+osc -A <apiurl> api /source/<obs_project>/<package_name>
+```
+The returned XML `<directory>` lists all `<entry name="...">` elements. Collect all file names.
+
+**4. Download each file**
+For each file name from step 3:
+```sh
+osc -A <apiurl> api /source/<obs_project>/<package_name>/<filename>
+```
+
+**5. Create the directory structure**
+```
+root/<target>/<package_name>/
+├── package.yaml       ← title + description from _meta (omit if both are empty)
+└── obs/               ← all files downloaded in step 4
+    ├── <file1>
+    └── <file2>
+```
+All OBS source files go into `obs/` regardless of type (`_aggregate`, `_service`, `_multibuild`, `*.spec`, `*.tar.gz`, etc.). Do **not** split them into `debian/` or `rpm/` subdirs during import — that restructuring is a separate step if desired.
+
+**6. Write `package.yaml`**
+```yaml
+title: <title from _meta>
+description: |
+  <description from _meta, reflowed to ~80 chars per line>
+```
+Omit `package.yaml` entirely if both `<title>` and `<description>` are empty in `_meta`.
+
+### Notes
+- Use the OBS package name unchanged as the local directory name.
+- Do not run `black` or `pyright` — no Python code is modified.
+- After creating the files, verify with `find root/<package_name> -type f | sort`.
+
 ## Direct OBS CLI (osc)
 ```sh
 # Check out a package from OBS
@@ -265,5 +322,6 @@ osc buildlog <project> <package> <repo> <arch>
 | PG extension multi-version | `ppg/17.9/percona-pg-telemetry/` |
 | Large PG server package | `ppg/17.9/percona-postgresql17/` |
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
+| OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
 | Management script | `percona-obs` (commands: `sync`, `build`, `config apply`) |
