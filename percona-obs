@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -268,6 +269,37 @@ def _iter_project_chain(obs_project: str, project_path: Path):
     yield from reversed(chain)
 
 
+def _check_git_clean() -> None:
+    """Abort if the working tree has uncommitted changes or HEAD is not pushed to any remote."""
+    repo_root = Path(__file__).parent
+
+    # Uncommitted changes (staged or unstaged, including untracked)
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, cwd=repo_root,
+    )
+    if result.returncode != 0:
+        print(f"error: git status failed: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    if result.stdout.strip():
+        print("error: there are uncommitted changes in the repository.", file=sys.stderr)
+        print("       Commit or stash all changes before running this command.", file=sys.stderr)
+        sys.exit(1)
+
+    # HEAD pushed to at least one remote
+    result = subprocess.run(
+        ["git", "branch", "-r", "--contains", "HEAD"],
+        capture_output=True, text=True, cwd=repo_root,
+    )
+    if result.returncode != 0:
+        print(f"error: git failed: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    if not result.stdout.strip():
+        print("error: HEAD commit has not been pushed to any remote.", file=sys.stderr)
+        print("       Push your branch before running this command.", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_sync(args):
     """Sync local packaging files to OBS, creating or updating projects and packages.
 
@@ -277,6 +309,7 @@ def cmd_sync(args):
       sync <top-level-package>    — sync a single package with no project grouping
       sync <project> <package>    — sync a single package under a project
     """
+    _check_git_clean()
     targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
     seen_projects: set = set()
@@ -326,6 +359,7 @@ def cmd_config_apply(args):
       config apply <project>              — apply config for a specific project
       config apply <project> <package>    — apply config for a specific package under a project
     """
+    _check_git_clean()
     apiurl = osc.conf.config["apiurl"]
 
     if args.project is None:
