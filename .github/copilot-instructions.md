@@ -108,22 +108,21 @@ This means:
 
 ### Dynamically generated repository paths
 
-When `percona-obs` pushes project metadata to OBS, it automatically injects a `<path>` entry pointing to the **immediate parent OBS project** into every repository of every non-root subproject. This is done by `build_project_meta()` in `percona-obs`.
+When `percona-obs` pushes project metadata to OBS, it automatically injects one `<path>` entry per ancestor OBS project into every repository of every non-root subproject. This is done by `build_project_meta()` in `percona-obs`, using the `_ancestor_projects()` helper.
 
-For example, the `home:Admin:ppg:17.9` project gets this injected for each repository:
+Ancestor paths are injected closest-first (immediate parent before grandparent), followed by the upstream path from `project.yaml`. This gives every subproject **direct** visibility into packages built in all ancestor projects, without relying on OBS transitive resolution.
+
+For example, the `home:Admin:ppg:17.9` project gets this generated for each repository:
 ```xml
 <repository name="RockyLinux_9">
-  <path project="home:Admin:ppg" repository="RockyLinux_9"/>   <!-- auto-injected parent path -->
-  <path project="openSUSE.org:RockyLinux:9" repository="standard"/>  <!-- from project.yaml -->
+  <path project="home:Admin:ppg" repository="RockyLinux_9"/>           <!-- auto-injected: immediate parent -->
+  <path project="home:Admin" repository="RockyLinux_9"/>               <!-- auto-injected: grandparent (rootprj) -->
+  <path project="openSUSE.org:RockyLinux:9" repository="standard"/>   <!-- from project.yaml -->
   <arch>x86_64</arch>
 </repository>
 ```
 
-OBS resolves repository paths transitively, so the full chain
-`home:Admin:ppg:17.9` → `home:Admin:ppg` → `home:Admin` → upstream
-is established automatically. This means packages built in a parent project are visible as build dependencies in all subprojects, without any manual path configuration.
-
-The root project (matching `--rootprj`) never gets the parent path injected.
+The root project (matching `--rootprj`) never gets ancestor paths injected. Only non-root subprojects are affected.
 
 ## Package Configuration (package.yaml)
 

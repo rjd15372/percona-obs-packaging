@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -57,24 +58,41 @@ def load_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _ancestor_projects(obs_project_name: str, rootprj: str) -> list[str]:
+    """Return all ancestor OBS project names from immediate parent to rootprj, inclusive.
+
+    For 'home:Admin:ppg:17.9' with rootprj 'home:Admin' returns:
+        ['home:Admin:ppg', 'home:Admin']
+    For the root project itself returns an empty list.
+    """
+    ancestors: list[str] = []
+    current = obs_project_name
+    while current != rootprj:
+        if ":" not in current:
+            break
+        current = current.rsplit(":", 1)[0]
+        ancestors.append(current)
+    return ancestors
+
+
 def build_project_meta(obs_project_name: str, title: str, description: str, repositories: list, rootprj: str) -> str:
     """Build OBS project metadata XML from project.yaml fields.
 
     For any project that is not the root project, each repository automatically
-    gets a <path> entry pointing to the same repository in the immediate parent
-    OBS project (one colon-component up). This lets OBS transitively resolve
-    build dependencies up the project hierarchy.
+    gets one <path> entry per ancestor OBS project (closest first), followed by
+    the upstream path from project.yaml. This gives every subproject direct
+    visibility into the packages built in all ancestor projects.
     """
-    parent_project = obs_project_name.rsplit(":", 1)[0] if obs_project_name != rootprj else None
+    ancestors = _ancestor_projects(obs_project_name, rootprj)
 
     root = ET.Element("project", name=obs_project_name)
     ET.SubElement(root, "title").text = title
     ET.SubElement(root, "description").text = description
     for repo in repositories:
         repo_elem = ET.SubElement(root, "repository", name=repo["name"])
-        if parent_project:
+        for ancestor in ancestors:
             ET.SubElement(repo_elem, "path",
-                          project=parent_project,
+                          project=ancestor,
                           repository=repo["name"])
         path_info = repo.get("path", {})
         if path_info:
@@ -301,14 +319,17 @@ def _apply_package_config(apiurl: str, obs_project_name: str, package_name: str,
     print(f"Updated package meta: {obs_project_name}/{package_name}")
 
 
-def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs_dir: Path) -> None:
-    """Upload files from obs_dir to the OBS package source, skipping unchanged files.
+def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs_dir: Path, message: str = "") -> None:
+    """Upload changed files from obs_dir to OBS as a single committed revision.
 
-    MD5 checksums reported by OBS are compared against local file checksums before
-    each upload. Files whose checksum already matches are skipped, preventing OBS
-    from triggering unnecessary service runs.
+    Each changed file is staged with ?rev=upload (no revision created yet).
+    After all files are staged, a single commit is issued, optionally with a
+    message. This produces one OBS source revision per sync instead of one
+    per file, and skips the commit entirely when nothing changed.
     """
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
+    uploaded: list[str] = []
+
     for filepath in sorted(obs_dir.iterdir()):
         if not filepath.is_file():
             continue
@@ -316,9 +337,21 @@ def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs
         if obs_md5s.get(filepath.name) == local_md5:
             print(f"Unchanged {filepath.name} in {obs_project_name}/{package_name} (skipped)")
             continue
-        url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name, filepath.name])
+        url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name, filepath.name], query={"rev": "upload"})
         osc.connection.http_PUT(url, file=str(filepath))
-        print(f"Uploaded {filepath.name} to {obs_project_name}/{package_name}")
+        print(f"Staged   {filepath.name} to {obs_project_name}/{package_name}")
+        uploaded.append(filepath.name)
+
+    if not uploaded:
+        return
+
+    commit_query: dict = {"cmd": "commit"}
+    if message:
+        commit_query["comment"] = message
+    url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name], query=commit_query)
+    osc.connection.http_POST(url)
+    label = f": {message}" if message else ""
+    print(f"Committed {len(uploaded)} file(s) to {obs_project_name}/{package_name}{label}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -420,6 +453,40 @@ def _check_git_clean() -> None:
         sys.exit(1)
 
 
+def _generate_sync_message(dirty: bool) -> str:
+    """Build the default OBS commit message from the current git state.
+
+    Normal:  percona-obs sync based on git commit <SHA1> from <branch> of <remote_url>
+    Dirty:   percona-obs sync based on git commit <SHA1> from local changes of <hostname>
+    """
+    repo_root = Path(__file__).parent
+
+    def _git(*args: str) -> str:
+        r = subprocess.run(["git"] + list(args), capture_output=True, text=True, cwd=repo_root)
+        return r.stdout.strip() if r.returncode == 0 else "unknown"
+
+    sha1 = _git("rev-parse", "HEAD")
+
+    if dirty:
+        hostname = socket.gethostname()
+        return f"percona-obs sync based on git commit {sha1} from local changes of {hostname}"
+
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+
+    # Discover which remote contains HEAD rather than assuming "origin".
+    # `git branch -r --contains HEAD` returns lines like "  origin/main", "  upstream/main".
+    # Pick the first remote name found; fall back to "unknown" if none.
+    remote_name = "unknown"
+    for line in _git("branch", "-r", "--contains", "HEAD").splitlines():
+        token = line.strip().split("/")[0]
+        if token:
+            remote_name = token
+            break
+    remote_url = _git("remote", "get-url", remote_name) if remote_name != "unknown" else "unknown"
+
+    return f"percona-obs sync based on git commit {sha1} from {branch} of {remote_url}"
+
+
 def cmd_sync(args):
     """Sync local packaging files to OBS, creating or updating projects and packages.
 
@@ -449,7 +516,8 @@ def cmd_sync(args):
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
-            _upload_obs_files(apiurl, obs_project_name, package_path.name, obs_dir)
+            message = args.message or _generate_sync_message(args.dirty)
+            _upload_obs_files(apiurl, obs_project_name, package_path.name, obs_dir, message=message)
 
 
 def cmd_build(args):
@@ -562,6 +630,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
+    )
+    sync_parser.add_argument(
+        "-m", "--message",
+        default="",
+        metavar="MSG",
+        help="Commit message recorded in the OBS source revision when files are uploaded.",
     )
     sync_parser.set_defaults(func=cmd_sync)
 
