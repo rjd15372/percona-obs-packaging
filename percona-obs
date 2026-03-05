@@ -4,9 +4,11 @@ import argparse
 import hashlib
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import urllib.error
 from pathlib import Path
 
@@ -584,6 +586,8 @@ def _upload_obs_files(
 
     if dry_run:
         _print_dry(f"{len(changed)} files  {obs_project_name}/{package_name}")
+        for name in changed:
+            print(f"      |_ {name}")
         return
 
     commit_query: dict = {"cmd": "commit"}
@@ -597,6 +601,8 @@ def _upload_obs_files(
     )
     osc.connection.http_POST(url)
     _print_change(f"{len(changed)} files  {obs_project_name}/{package_name}")
+    for name in changed:
+        print(f"      |_ {name}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -756,6 +762,97 @@ def _generate_sync_message(dirty: bool) -> str:
     return f"sync: {branch}@{short_sha} ({remote_url})"
 
 
+_OBS_SERVICE_DIR = Path("/usr/lib/obs/service")
+_SKIP_MODES = {"buildtime", "serveronly", "disabled"}
+
+
+def _has_manual_services(service_file: Path) -> bool:
+    """Return True if any service in *service_file* declares mode="manual"."""
+    try:
+        root = ET.parse(service_file).getroot()
+    except (ET.ParseError, OSError):
+        return False
+    return any(svc.get("mode") == "manual" for svc in root.findall("service"))
+
+
+def _run_local_services(obs_dir: Path) -> tuple[Path, list[str]]:
+    """Run all non-buildtime OBS services locally; return (workdir, manual_artifact_names).
+
+    Services declared in obs_dir/_service are invoked in XML declaration order.
+    Modes "buildtime", "serveronly", and "disabled" are skipped.  Each service
+    binary is expected at /usr/lib/obs/service/<name>.  If a binary is missing a
+    warning is logged and the service is skipped.
+
+    All service outputs are merged into a shared work directory so later services
+    can consume outputs from earlier ones (e.g. go_modules consuming obs_scm
+    tarballs).  Only files produced by mode="manual" services are returned in
+    manual_artifact_names — those are the files that must be committed to OBS.
+
+    The caller owns cleanup of the returned workdir.
+
+    Raises SystemExit on service failure.
+    """
+    service_file = obs_dir / "_service"
+    root = ET.parse(service_file).getroot()
+
+    workdir = Path(tempfile.mkdtemp(prefix="percona-obs-svc-"))
+    for src in obs_dir.iterdir():
+        if src.is_file():
+            shutil.copy2(src, workdir / src.name)
+
+    manual_artifacts: list[str] = []
+
+    for svc in root.findall("service"):
+        name = svc.get("name", "")
+        mode = svc.get("mode", "")
+
+        if mode in _SKIP_MODES:
+            logger.debug(f"skipping service {name!r} (mode={mode!r})")
+            continue
+
+        binary = _OBS_SERVICE_DIR / name
+        if not binary.exists():
+            logger.warning(f"service binary not found, skipping: {binary}")
+            continue
+
+        cmd: list[str] = [str(binary)]
+        for param in svc.findall("param"):
+            pname = param.get("name", "")
+            pval = (param.text or "").strip()
+            cmd += [f"--{pname}", pval]
+
+        outdir = Path(tempfile.mkdtemp(prefix=f"percona-obs-svc-{name}-"))
+        cmd += ["--outdir", str(outdir)]
+
+        logger.debug(f"running service: {' '.join(cmd)}")
+        result = subprocess.run(cmd, cwd=str(workdir), capture_output=True, text=True)
+        if result.stdout:
+            logger.debug(f"  stdout: {result.stdout.rstrip()}")
+        if result.stderr:
+            logger.debug(f"  stderr: {result.stderr.rstrip()}")
+
+        if result.returncode != 0:
+            shutil.rmtree(outdir, ignore_errors=True)
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise SystemExit(
+                f"error: service {name!r} exited with {result.returncode}:\n"
+                f"  {result.stderr.strip() or '(no stderr output)'}"
+            )
+
+        generated: list[str] = []
+        for out_file in sorted(outdir.iterdir()):
+            if out_file.is_file():
+                shutil.move(str(out_file), str(workdir / out_file.name))
+                generated.append(out_file.name)
+        shutil.rmtree(outdir, ignore_errors=True)
+
+        if mode == "manual":
+            manual_artifacts.extend(generated)
+        logger.debug(f"service {name!r} produced: {generated}")
+
+    return workdir, manual_artifacts
+
+
 def cmd_sync(args):
     """Sync local packaging files to OBS, creating or updating projects and packages.
 
@@ -770,6 +867,7 @@ def cmd_sync(args):
     targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
     seen_projects: set = set()
+    dry_run_obs = args.dry_run or args.dry_run_remote
 
     for obs_project, package_path in targets:
         project_path = package_path.parent
@@ -794,7 +892,7 @@ def cmd_sync(args):
                             proj_path,
                             args.rootprj,
                             force=args.force,
-                            dry_run=args.dry_run,
+                            dry_run=dry_run_obs,
                         )
                         seen_projects.add(raw_proj)
         else:
@@ -811,7 +909,7 @@ def cmd_sync(args):
                         proj_path,
                         args.rootprj,
                         force=args.force,
-                        dry_run=args.dry_run,
+                        dry_run=dry_run_obs,
                     )
                     seen_projects.add(raw_proj)
 
@@ -821,22 +919,82 @@ def cmd_sync(args):
             package_path.name,
             package_path,
             force=args.force,
-            dry_run=args.dry_run,
+            dry_run=dry_run_obs,
         )
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
             message = args.message or _generate_sync_message(args.dirty)
-            _upload_obs_files(
-                apiurl,
-                obs_project_name,
-                package_path.name,
-                obs_dir,
-                message=message,
-                dry_run=args.dry_run,
+            service_file = obs_dir / "_service"
+            run_services = (
+                not args.no_services
+                and service_file.is_file()
+                and _has_manual_services(service_file)
             )
+            if run_services:
+                svc_root = ET.parse(service_file).getroot()
+                manual_svc_names = [
+                    svc.get("name", "?")
+                    for svc in svc_root.findall("service")
+                    if svc.get("mode") == "manual"
+                ]
+                for svc_name in manual_svc_names:
+                    if args.dry_run and not args.dry_run_remote:
+                        _print_dry(
+                            f"service {svc_name}  {obs_project_name}/{package_path.name}"
+                        )
+                    else:
+                        _print_action(
+                            f"service {svc_name}  {obs_project_name}/{package_path.name}"
+                        )
+                if args.dry_run and not args.dry_run_remote:
+                    # Pure dry-run: cannot run services; report obs/ diff as-is.
+                    _upload_obs_files(
+                        apiurl,
+                        obs_project_name,
+                        package_path.name,
+                        obs_dir,
+                        message=message,
+                        dry_run=True,
+                    )
+                else:
+                    workdir, manual_artifacts = _run_local_services(obs_dir)
+                    try:
+                        combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                        try:
+                            for f in obs_dir.iterdir():
+                                if f.is_file():
+                                    shutil.copy2(f, combined / f.name)
+                            for art_name in manual_artifacts:
+                                shutil.copy2(workdir / art_name, combined / art_name)
+                            _upload_obs_files(
+                                apiurl,
+                                obs_project_name,
+                                package_path.name,
+                                combined,
+                                message=message,
+                                dry_run=dry_run_obs,
+                            )
+                        finally:
+                            shutil.rmtree(combined, ignore_errors=True)
+                    finally:
+                        shutil.rmtree(workdir, ignore_errors=True)
+            else:
+                _upload_obs_files(
+                    apiurl,
+                    obs_project_name,
+                    package_path.name,
+                    obs_dir,
+                    message=message,
+                    dry_run=dry_run_obs,
+                )
 
-    suffix = " (dry run)" if args.dry_run else ""
+    if args.dry_run:
+        suffix = " (dry run)"
+    elif args.dry_run_remote:
+        suffix = " (dry run: remote)"
+    else:
+        suffix = ""
     _print_ok(f"sync successful{suffix}")
 
 
@@ -998,6 +1156,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Simulate actions without writing anything to OBS.",
+    )
+    sync_parser.add_argument(
+        "--dry-run-remote",
+        action="store_true",
+        default=False,
+        help="Run local services but skip all OBS write calls. Use to verify services work without committing to OBS.",
+    )
+    sync_parser.add_argument(
+        "--no-services",
+        action="store_true",
+        default=False,
+        help="Skip running local OBS services (mode=manual). Upload obs/ files as-is.",
     )
     sync_parser.set_defaults(func=cmd_sync)
 

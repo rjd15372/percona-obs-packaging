@@ -156,7 +156,7 @@ OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-ru
 |---|---|---|
 | `  + ` | green | Change applied to OBS |
 | `  ~ ` | yellow | Would change (dry-run mode only — nothing written) |
-| `  > ` | cyan | Service triggered |
+| `  > ` | cyan | Action taken: local service run or OBS service triggered |
 | `  ✔ ` | bold green | Command completed successfully |
 | `  · ` | dim | Debug message (only shown with `--verbose`) |
 
@@ -178,7 +178,7 @@ Both `sync` and `config apply` compare the desired state against what OBS curren
 
 If nothing changed, no API write call is made and no output line is printed for that item. Use `--force` to bypass comparison and always write.
 
-### `sync [--force] [--dirty] [--dry-run] [-m MSG] [project] [package]`
+### `sync [--force] [--dirty] [--dry-run] [--dry-run-remote] [--no-services] [-m MSG] [project] [package]`
 
 Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then `obs/` source files are uploaded as a **single OBS source revision**.
 
@@ -192,10 +192,24 @@ Syncs local packaging files to OBS, creating or updating projects and packages (
 Options:
 - `--force` — bypass OBS conflict checks; always write meta and files regardless of diff.
 - `--dirty` — skip the git safeguard (allow uncommitted changes or an unpushed HEAD).
-- `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. Outputs `  ~ ` lines instead of `  + `.
+- `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. Outputs `  ~ ` lines instead of `  + `. Local services are **not** run in this mode.
+- `--dry-run-remote` — run local services for real, then report what would be uploaded to OBS without writing. Use to verify manual services work before committing. Outputs `  ~ ` lines for OBS changes.
+- `--no-services` — skip local service execution; upload `obs/` as-is even if `_service` declares manual services.
 - `-m MSG` / `--message MSG` — commit message recorded in the OBS source revision. When omitted, a message is generated automatically:
   - Normal: `sync: <branch>@<short-sha> (<remote_url>)`
   - With `--dirty`: `sync: <branch>@<short-sha> (local changes on <hostname>)`
+
+### Local service execution
+
+If a package's `obs/_service` contains any service with `mode="manual"`, `sync` automatically runs all non-buildtime services locally before uploading. This is required for packages like Go services that use `go_modules` (mode=manual) to vendor dependencies.
+
+**Execution order and file handling:**
+1. All services with `mode` not in `{buildtime, serveronly, disabled}` are run in XML declaration order.
+2. Each service binary is invoked from `/usr/lib/obs/service/<name>` with its `<param>` values and `--outdir`.
+3. Service outputs are merged into a shared work directory so later services can consume earlier outputs (e.g. `go_modules` consuming `obs_scm` tarballs).
+4. Only files produced by `mode="manual"` services are committed to OBS. Files produced by no-mode services (e.g. obs_scm source tarballs) are used locally but **not** uploaded — OBS regenerates those on its server.
+
+If a service binary is missing from `/usr/lib/obs/service/`, a warning is logged and the service is skipped. A non-zero service exit code aborts the entire `sync` run.
 
 When targeting a specific package (`sync <project> <package>`), the ancestor project chain is only walked if the target project does not yet exist on OBS (fast path avoids redundant GET calls otherwise).
 
