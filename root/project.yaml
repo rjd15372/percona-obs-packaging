@@ -11,7 +11,7 @@ repositories:
       project: openSUSE.org:Debian:13
       repository: standard
     archs: [x86_64]
-  - name: Ubuntu_24.04
+  - name: xUbuntu_24.04
     path:
       project: openSUSE.org:Ubuntu:24.04
       repository: universe
