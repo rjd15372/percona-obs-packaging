@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import logging
 import socket
 import subprocess
 import sys
@@ -14,6 +15,8 @@ import yaml
 import osc.conf
 import osc.connection
 import osc.core
+
+logger = logging.getLogger("percona-obs")
 
 # Root of the packaging tree, relative to this script
 REPO_ROOT = Path(__file__).parent / "root"
@@ -75,7 +78,13 @@ def _ancestor_projects(obs_project_name: str, rootprj: str) -> list[str]:
     return ancestors
 
 
-def build_project_meta(obs_project_name: str, title: str, description: str, repositories: list, rootprj: str) -> str:
+def build_project_meta(
+    obs_project_name: str,
+    title: str,
+    description: str,
+    repositories: list,
+    rootprj: str,
+) -> str:
     """Build OBS project metadata XML from project.yaml fields.
 
     For any project that is not the root project, each repository automatically
@@ -91,21 +100,24 @@ def build_project_meta(obs_project_name: str, title: str, description: str, repo
     for repo in repositories:
         repo_elem = ET.SubElement(root, "repository", name=repo["name"])
         for ancestor in ancestors:
-            ET.SubElement(repo_elem, "path",
-                          project=ancestor,
-                          repository=repo["name"])
+            ET.SubElement(repo_elem, "path", project=ancestor, repository=repo["name"])
         path_info = repo.get("path", {})
         if path_info:
-            ET.SubElement(repo_elem, "path",
-                          project=path_info["project"],
-                          repository=path_info["repository"])
+            ET.SubElement(
+                repo_elem,
+                "path",
+                project=path_info["project"],
+                repository=path_info["repository"],
+            )
         for arch in repo.get("archs", []):
             ET.SubElement(repo_elem, "arch").text = arch
     ET.indent(root)
     return ET.tostring(root, encoding="unicode")
 
 
-def build_package_meta(obs_project_name: str, package_name: str, title: str, description: str) -> str:
+def build_package_meta(
+    obs_project_name: str, package_name: str, title: str, description: str
+) -> str:
     """Build OBS package metadata XML from package.yaml fields."""
     root = ET.Element("package", name=package_name, project=obs_project_name)
     ET.SubElement(root, "title").text = title
@@ -180,12 +192,15 @@ def _obs_project_exists(apiurl: str, obs_project_name: str) -> bool:
         return False
 
 
-def _fetch_obs_file_md5s(apiurl: str, obs_project_name: str, package_name: str) -> dict[str, str]:
+def _fetch_obs_file_md5s(
+    apiurl: str, obs_project_name: str, package_name: str
+) -> dict[str, str]:
     """Return {filename: md5} for files currently stored in the OBS package source.
 
     Returns an empty dict if the package does not yet exist or on any error,
     which causes all local files to be uploaded unconditionally.
     """
+    logger.debug(f"fetching file list: {obs_project_name}/{package_name}")
     url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name])
     try:
         response = osc.connection.http_GET(url)
@@ -228,11 +243,17 @@ def _project_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
 
     for name, d_repo in desired_repos.items():
         c_repo = current_repos[name]
-        d_paths = [(p.get("project"), p.get("repository")) for p in d_repo.findall("path")]
-        c_paths = [(p.get("project"), p.get("repository")) for p in c_repo.findall("path")]
+        d_paths = [
+            (p.get("project"), p.get("repository")) for p in d_repo.findall("path")
+        ]
+        c_paths = [
+            (p.get("project"), p.get("repository")) for p in c_repo.findall("path")
+        ]
         if d_paths != c_paths:
             return False
-        if [a.text for a in d_repo.findall("arch")] != [a.text for a in c_repo.findall("arch")]:
+        if [a.text for a in d_repo.findall("arch")] != [
+            a.text for a in c_repo.findall("arch")
+        ]:
             return False
 
     return True
@@ -246,13 +267,18 @@ def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
     except ET.ParseError:
         return False
 
-    return (
-        _child_text(current, "title") == _child_text(desired, "title")
-        and _child_text(current, "description") == _child_text(desired, "description")
-    )
+    return _child_text(current, "title") == _child_text(
+        desired, "title"
+    ) and _child_text(current, "description") == _child_text(desired, "description")
 
 
-def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path, rootprj: str, force: bool = False) -> None:
+def _apply_project_config(
+    apiurl: str,
+    obs_project_name: str,
+    project_path: Path,
+    rootprj: str,
+    force: bool = False,
+) -> None:
     """Create or update OBS project metadata and build config from project.yaml.
 
     Skips the API call when the content already matches what OBS has, unless
@@ -270,38 +296,92 @@ def _apply_project_config(apiurl: str, obs_project_name: str, project_path: Path
     # --- project meta ---
     if not force:
         try:
-            current = _decode_obs_response(osc.core.show_project_meta(apiurl, obs_project_name)).encode()
+            logger.debug(f"fetching project meta: {obs_project_name}")
+            current = _decode_obs_response(
+                osc.core.show_project_meta(apiurl, obs_project_name)
+            ).encode()
             if _project_meta_subset_equal(current, meta):
-                print(f"Project meta unchanged: {obs_project_name}")
+                logger.debug(f"project meta unchanged: {obs_project_name}")
             else:
-                osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=False, apiurl=apiurl)
-                print(f"Updated project meta: {obs_project_name}")
+                logger.debug(f"updating project meta: {obs_project_name}")
+                osc.core.edit_meta(
+                    metatype="prj",
+                    path_args=(obs_project_name,),
+                    data=[meta],
+                    force=False,
+                    apiurl=apiurl,
+                )
+                print(f"  + project meta  {obs_project_name}")
         except Exception:
-            osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=False, apiurl=apiurl)
-            print(f"Updated project meta: {obs_project_name}")
+            logger.debug(f"creating project meta: {obs_project_name}")
+            osc.core.edit_meta(
+                metatype="prj",
+                path_args=(obs_project_name,),
+                data=[meta],
+                force=False,
+                apiurl=apiurl,
+            )
+            print(f"  + project meta  {obs_project_name}")
     else:
-        osc.core.edit_meta(metatype="prj", path_args=(obs_project_name,), data=[meta], force=True, apiurl=apiurl)
-        print(f"Updated project meta: {obs_project_name}")
+        logger.debug(f"force-updating project meta: {obs_project_name}")
+        osc.core.edit_meta(
+            metatype="prj",
+            path_args=(obs_project_name,),
+            data=[meta],
+            force=True,
+            apiurl=apiurl,
+        )
+        print(f"  + project meta  {obs_project_name}")
 
     # --- project config ---
     project_config_str = project_config.get("project-config") or ""
     if not force:
         try:
-            current_conf = _decode_obs_response(osc.core.show_project_conf(apiurl, obs_project_name))
+            logger.debug(f"fetching project config: {obs_project_name}")
+            current_conf = _decode_obs_response(
+                osc.core.show_project_conf(apiurl, obs_project_name)
+            )
             if current_conf.strip() == project_config_str.strip():
-                print(f"Project config unchanged: {obs_project_name}")
+                logger.debug(f"project config unchanged: {obs_project_name}")
             else:
-                osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=False, apiurl=apiurl)
-                print(f"Updated project config: {obs_project_name}")
+                logger.debug(f"updating project config: {obs_project_name}")
+                osc.core.edit_meta(
+                    metatype="prjconf",
+                    path_args=(obs_project_name,),
+                    data=[project_config_str],
+                    force=False,
+                    apiurl=apiurl,
+                )
+                print(f"  + project config  {obs_project_name}")
         except Exception:
-            osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=False, apiurl=apiurl)
-            print(f"Updated project config: {obs_project_name}")
+            logger.debug(f"creating project config: {obs_project_name}")
+            osc.core.edit_meta(
+                metatype="prjconf",
+                path_args=(obs_project_name,),
+                data=[project_config_str],
+                force=False,
+                apiurl=apiurl,
+            )
+            print(f"  + project config  {obs_project_name}")
     else:
-        osc.core.edit_meta(metatype="prjconf", path_args=(obs_project_name,), data=[project_config_str], force=True, apiurl=apiurl)
-        print(f"Updated project config: {obs_project_name}")
+        logger.debug(f"force-updating project config: {obs_project_name}")
+        osc.core.edit_meta(
+            metatype="prjconf",
+            path_args=(obs_project_name,),
+            data=[project_config_str],
+            force=True,
+            apiurl=apiurl,
+        )
+        print(f"  + project config  {obs_project_name}")
 
 
-def _apply_package_config(apiurl: str, obs_project_name: str, package_name: str, package_path: Path, force: bool = False) -> None:
+def _apply_package_config(
+    apiurl: str,
+    obs_project_name: str,
+    package_name: str,
+    package_path: Path,
+    force: bool = False,
+) -> None:
     """Create or update OBS package metadata from package.yaml.
 
     Skips the API call when the content already matches what OBS has, unless
@@ -317,18 +397,37 @@ def _apply_package_config(apiurl: str, obs_project_name: str, package_name: str,
 
     if not force:
         try:
-            current = _decode_obs_response(osc.core.show_package_meta(apiurl, obs_project_name, package_name)).encode()
+            logger.debug(f"fetching package meta: {obs_project_name}/{package_name}")
+            current = _decode_obs_response(
+                osc.core.show_package_meta(apiurl, obs_project_name, package_name)
+            ).encode()
             if _package_meta_subset_equal(current, meta):
-                print(f"Package meta unchanged: {obs_project_name}/{package_name}")
+                logger.debug(
+                    f"package meta unchanged: {obs_project_name}/{package_name}"
+                )
                 return
         except Exception:
             pass
 
-    osc.core.edit_meta(metatype="pkg", path_args=(obs_project_name, package_name), data=[meta], force=force, apiurl=apiurl)
-    print(f"Updated package meta: {obs_project_name}/{package_name}")
+    action = "force-updating" if force else "updating"
+    logger.debug(f"{action} package meta: {obs_project_name}/{package_name}")
+    osc.core.edit_meta(
+        metatype="pkg",
+        path_args=(obs_project_name, package_name),
+        data=[meta],
+        force=force,
+        apiurl=apiurl,
+    )
+    print(f"  + package  {obs_project_name}/{package_name}")
 
 
-def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs_dir: Path, message: str = "") -> None:
+def _upload_obs_files(
+    apiurl: str,
+    obs_project_name: str,
+    package_name: str,
+    obs_dir: Path,
+    message: str = "",
+) -> None:
     """Upload changed files from obs_dir to OBS as a single committed revision.
 
     Each changed file is staged with ?rev=upload (no revision created yet).
@@ -344,23 +443,32 @@ def _upload_obs_files(apiurl: str, obs_project_name: str, package_name: str, obs
             continue
         local_md5 = hashlib.md5(filepath.read_bytes()).hexdigest()
         if obs_md5s.get(filepath.name) == local_md5:
-            print(f"Unchanged {filepath.name} in {obs_project_name}/{package_name} (skipped)")
+            logger.debug(f"{filepath.name} unchanged (md5 match)")
             continue
-        url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name, filepath.name], query={"rev": "upload"})
+        logger.debug(f"staging {filepath.name} → {obs_project_name}/{package_name}")
+        url = osc.core.makeurl(
+            apiurl,
+            ["source", obs_project_name, package_name, filepath.name],
+            query={"rev": "upload"},
+        )
         osc.connection.http_PUT(url, file=str(filepath))
-        print(f"Staged   {filepath.name} to {obs_project_name}/{package_name}")
         uploaded.append(filepath.name)
 
     if not uploaded:
+        logger.debug(f"no files changed: {obs_project_name}/{package_name}")
         return
 
     commit_query: dict = {"cmd": "commit"}
     if message:
         commit_query["comment"] = message
-    url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name], query=commit_query)
+    logger.debug(
+        f"committing {len(uploaded)} file(s): {obs_project_name}/{package_name}"
+    )
+    url = osc.core.makeurl(
+        apiurl, ["source", obs_project_name, package_name], query=commit_query
+    )
     osc.connection.http_POST(url)
-    label = f": {message}" if message else ""
-    print(f"Committed {len(uploaded)} file(s) to {obs_project_name}/{package_name}{label}")
+    print(f"  + {len(uploaded)} files  {obs_project_name}/{package_name}")
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -383,7 +491,10 @@ def _resolve_targets(args) -> list[tuple[str, Path]]:
     if is_package(first_path):
         # First arg is a top-level package, not a project
         if args.package is not None:
-            print(f"error: '{args.project}' is a package; a sub-package argument cannot be given", file=sys.stderr)
+            print(
+                f"error: '{args.project}' is a package; a sub-package argument cannot be given",
+                file=sys.stderr,
+            )
             sys.exit(1)
         return [(args.rootprj, first_path)]
 
@@ -392,16 +503,23 @@ def _resolve_targets(args) -> list[tuple[str, Path]]:
     if args.package is not None:
         package_path = first_path / args.package
         if not package_path.is_dir():
-            print(f"error: package directory not found: {package_path}", file=sys.stderr)
+            print(
+                f"error: package directory not found: {package_path}", file=sys.stderr
+            )
             sys.exit(1)
         if not is_package(package_path):
-            print(f"error: '{args.package}' is not a package (no obs/ directory found inside)", file=sys.stderr)
+            print(
+                f"error: '{args.package}' is not a package (no obs/ directory found inside)",
+                file=sys.stderr,
+            )
             sys.exit(1)
         return [(full_obs_project, package_path)]
 
     targets = list(find_packages(first_path, full_obs_project))
     if not targets:
-        print(f"error: no packages found under project '{args.project}'", file=sys.stderr)
+        print(
+            f"error: no packages found under project '{args.project}'", file=sys.stderr
+        )
         sys.exit(1)
     return targets
 
@@ -438,20 +556,29 @@ def _check_git_clean() -> None:
     # Uncommitted changes (staged or unstaged, including untracked)
     result = subprocess.run(
         ["git", "status", "--porcelain"],
-        capture_output=True, text=True, cwd=repo_root,
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
     )
     if result.returncode != 0:
         print(f"error: git status failed: {result.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
     if result.stdout.strip():
-        print("error: there are uncommitted changes in the repository.", file=sys.stderr)
-        print("       Commit or stash all changes before running this command.", file=sys.stderr)
+        print(
+            "error: there are uncommitted changes in the repository.", file=sys.stderr
+        )
+        print(
+            "       Commit or stash all changes before running this command.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # HEAD pushed to at least one remote
     result = subprocess.run(
         ["git", "branch", "-r", "--contains", "HEAD"],
-        capture_output=True, text=True, cwd=repo_root,
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
     )
     if result.returncode != 0:
         print(f"error: git failed: {result.stderr.strip()}", file=sys.stderr)
@@ -471,7 +598,9 @@ def _generate_sync_message(dirty: bool) -> str:
     repo_root = Path(__file__).parent
 
     def _git(*args: str) -> str:
-        r = subprocess.run(["git"] + list(args), capture_output=True, text=True, cwd=repo_root)
+        r = subprocess.run(
+            ["git"] + list(args), capture_output=True, text=True, cwd=repo_root
+        )
         return r.stdout.strip() if r.returncode == 0 else "unknown"
 
     short_sha = _git("rev-parse", "--short", "HEAD")
@@ -490,7 +619,11 @@ def _generate_sync_message(dirty: bool) -> str:
         if token:
             remote_name = token
             break
-    remote_url = _git("remote", "get-url", remote_name) if remote_name != "unknown" else "unknown"
+    remote_url = (
+        _git("remote", "get-url", remote_name)
+        if remote_name != "unknown"
+        else "unknown"
+    )
 
     return f"sync: {branch}@{short_sha} ({remote_url})"
 
@@ -522,26 +655,40 @@ def cmd_sync(args):
             project_config = load_yaml(project_path / "project.yaml")
             obs_project_name = project_config.get("name") or obs_project
             if not _obs_project_exists(apiurl, obs_project_name):
-                for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
+                for raw_proj, prj_name, proj_path in _iter_project_chain(
+                    obs_project, project_path
+                ):
                     obs_project_name = prj_name
                     if raw_proj not in seen_projects:
-                        _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
+                        _apply_project_config(
+                            apiurl, prj_name, proj_path, args.rootprj, force=args.force
+                        )
                         seen_projects.add(raw_proj)
         else:
             # Syncing a whole project or everything — ensure the full project hierarchy
             # is created/updated first (seen_projects deduplicates across packages).
-            for raw_proj, prj_name, proj_path in _iter_project_chain(obs_project, project_path):
+            for raw_proj, prj_name, proj_path in _iter_project_chain(
+                obs_project, project_path
+            ):
                 obs_project_name = prj_name
                 if raw_proj not in seen_projects:
-                    _apply_project_config(apiurl, prj_name, proj_path, args.rootprj, force=args.force)
+                    _apply_project_config(
+                        apiurl, prj_name, proj_path, args.rootprj, force=args.force
+                    )
                     seen_projects.add(raw_proj)
 
-        _apply_package_config(apiurl, obs_project_name, package_path.name, package_path, force=args.force)
+        _apply_package_config(
+            apiurl, obs_project_name, package_path.name, package_path, force=args.force
+        )
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
             message = args.message or _generate_sync_message(args.dirty)
-            _upload_obs_files(apiurl, obs_project_name, package_path.name, obs_dir, message=message)
+            _upload_obs_files(
+                apiurl, obs_project_name, package_path.name, obs_dir, message=message
+            )
+
+    print("  ✔  sync successful")
 
 
 def cmd_build(args):
@@ -560,8 +707,11 @@ def cmd_build(args):
         project_path = package_path.parent
         project_config = load_yaml(project_path / "project.yaml")
         obs_project_name = project_config.get("name") or obs_project
+        logger.debug(f"triggering service run: {obs_project_name}/{package_path.name}")
         osc.core.runservice(apiurl, obs_project_name, package_path.name)
-        print(f"Triggered service run: {obs_project_name}/{package_path.name}")
+        print(f"  > service  {obs_project_name}/{package_path.name}")
+
+    print("  ✔  build successful")
 
 
 def cmd_config_apply(args):
@@ -586,7 +736,9 @@ def cmd_config_apply(args):
             print(f"error: '{args.project}' not found under root/", file=sys.stderr)
             sys.exit(1)
         if is_package(project_path):
-            print(f"error: '{args.project}' is a package, not a project", file=sys.stderr)
+            print(
+                f"error: '{args.project}' is a package, not a project", file=sys.stderr
+            )
             sys.exit(1)
         obs_project = f"{args.rootprj}:{args.project}"
 
@@ -596,14 +748,25 @@ def cmd_config_apply(args):
     if args.package is not None:
         package_path = project_path / args.package
         if not package_path.is_dir():
-            print(f"error: package directory not found: {package_path}", file=sys.stderr)
+            print(
+                f"error: package directory not found: {package_path}", file=sys.stderr
+            )
             sys.exit(1)
         if not is_package(package_path):
-            print(f"error: '{args.package}' is not a package (no obs/ directory found inside)", file=sys.stderr)
+            print(
+                f"error: '{args.package}' is not a package (no obs/ directory found inside)",
+                file=sys.stderr,
+            )
             sys.exit(1)
-        _apply_package_config(apiurl, obs_project_name, package_path.name, package_path, force=args.force)
+        _apply_package_config(
+            apiurl, obs_project_name, package_path.name, package_path, force=args.force
+        )
     else:
-        _apply_project_config(apiurl, obs_project_name, project_path, args.rootprj, force=args.force)
+        _apply_project_config(
+            apiurl, obs_project_name, project_path, args.rootprj, force=args.force
+        )
+
+    print("  ✔  config apply successful")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -612,15 +775,23 @@ def build_parser() -> argparse.ArgumentParser:
         description="Manage Percona packages on an OBS instance.",
     )
     parser.add_argument(
-        "-A", "--apiurl",
+        "-A",
+        "--apiurl",
         metavar="URL",
         help="OBS API URL (e.g. http://my-obs-instance.local:8000)",
     )
     parser.add_argument(
-        "-R", "--rootprj",
+        "-R",
+        "--rootprj",
         metavar="PROJECT",
         required=True,
         help="OBS root project under which all projects are deployed (e.g. home:username)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Print debug-level log messages (API calls, unchanged items) to stdout.",
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
@@ -635,7 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
-             "If omitted, all packages and projects under root/ are synced.",
+        "If omitted, all packages and projects under root/ are synced.",
     )
     sync_parser.add_argument(
         "package",
@@ -656,7 +827,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
     )
     sync_parser.add_argument(
-        "-m", "--message",
+        "-m",
+        "--message",
         default="",
         metavar="MSG",
         help="Commit message recorded in the OBS source revision when files are uploaded.",
@@ -672,7 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
-             "If omitted, services are triggered for all packages under root/.",
+        "If omitted, services are triggered for all packages under root/.",
     )
     build_parser_.add_argument(
         "package",
@@ -686,7 +858,9 @@ def build_parser() -> argparse.ArgumentParser:
         "config",
         help="Manage OBS project and package configuration.",
     )
-    config_subparsers = config_parser.add_subparsers(dest="config_command", metavar="<subcommand>")
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_command", metavar="<subcommand>"
+    )
     config_subparsers.required = True
 
     config_apply_parser = config_subparsers.add_parser(
@@ -698,7 +872,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help="Project name (colon notation, e.g. ppg:17.9). "
-             "If omitted, config is applied to all projects under root/.",
+        "If omitted, config is applied to all projects under root/.",
     )
     config_apply_parser.add_argument(
         "package",
@@ -726,6 +900,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.verbose:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("  · %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.DEBUG)
 
     osc.conf.get_config(override_apiurl=args.apiurl)
 
