@@ -15,6 +15,7 @@ from .common import (
     _build_aggregate_xml,
     _print_aggregate,
     _print_ok,
+    _print_same,
     _print_update,
     load_yaml,
     logger,
@@ -47,6 +48,8 @@ from .targets import _iter_project_chain, _resolve_targets, _topo_sort_projects
 
 # Matches the standard sync commit message: sync: <branch>@<sha> (<detail>)
 _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
+# Matches a branch aggregate message: branch: <profile> (<obs_project>/<package>)
+_BRANCH_MSG_RE = re.compile(r"^branch: \S+ \((.+)/[^/]+\)$")
 
 
 def _content_matches_branch(
@@ -370,6 +373,24 @@ def cmd_sync(args):
                     f"  → {branch_project}/{package_path.name}"
                 )
             else:
+                # When not using --branch-from, the target OBS package may
+                # still hold a _aggregate from a prior --branch-from sync.
+                # If the source content hasn't changed, skip the upload.
+                if not branch_rootprj:
+                    prior_comment = _fetch_obs_package_latest_comment(
+                        apiurl, obs_project_name, package_path.name
+                    )
+                    if prior_comment:
+                        bm = _BRANCH_MSG_RE.match(prior_comment)
+                        if bm:
+                            src_proj = bm.group(1)
+                            if _content_matches_branch(
+                                apiurl, src_proj, package_path.name, obs_dir
+                            ):
+                                _print_same(
+                                    f"files  {obs_project_name}/{package_path.name}"
+                                )
+                                continue
                 message = args.message or _generate_sync_message(args.dirty)
                 service_file = obs_dir / "_service"
                 run_services = (
