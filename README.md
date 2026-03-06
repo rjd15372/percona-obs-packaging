@@ -59,6 +59,32 @@ reused by all subsequent `osc` and `percona-obs` invocations.
 
 ---
 
+## Repository layout
+
+All packaging content lives under `root/`, whose directory structure mirrors the OBS
+project and package hierarchy:
+
+```
+root/
+├── project.yaml                # OBS root project config (repos, build config)
+├── <package>/                  # top-level package (no subproject)
+│   ├── debian/                 # Debian packaging files
+│   ├── rpm/                    # RPM spec and patches
+│   ├── package.yaml            # optional OBS package metadata (title, description)
+│   └── obs/
+│       ├── _service            # OBS build service config
+│       └── _multibuild         # multi-flavor build (PostgreSQL extensions only)
+└── <subproject>/               # subproject grouping (maps to an OBS subproject)
+    ├── project.yaml            # subproject OBS config (inherits from root if absent)
+    └── <package>/
+        └── ...
+```
+
+A directory is a **package** if it contains an `obs/` subdirectory or a `package.yaml`
+file. Everything else is treated as a **subproject**.
+
+---
+
 ## Usage
 
 All `percona-obs` commands require two global options:
@@ -162,27 +188,3 @@ obs sync ppg:17.9
    ```
 
 ---
-
-## Repository layout
-
-All packaging content lives under `root/`, whose directory structure mirrors the OBS
-project and package hierarchy:
-
-```
-root/
-├── project.yaml                # OBS root project config (repos, build config)
-├── <package>/                  # top-level package (no subproject)
-│   ├── debian/                 # Debian packaging files
-│   ├── rpm/                    # RPM spec and patches
-│   ├── package.yaml            # optional OBS package metadata (title, description)
-│   └── obs/
-│       ├── _service            # OBS build service config
-│       └── _multibuild         # multi-flavor build (PostgreSQL extensions only)
-└── <subproject>/               # subproject grouping (maps to an OBS subproject)
-    ├── project.yaml            # subproject OBS config (inherits from root if absent)
-    └── <package>/
-        └── ...
-```
-
-A directory is a **package** if it contains an `obs/` subdirectory or a `package.yaml`
-file. Everything else is treated as a **subproject**.

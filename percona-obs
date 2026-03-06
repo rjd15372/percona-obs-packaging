@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).parent / "root"
 # (https://no-color.org/).
 _USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 
+_RED = "\033[31m"
 _GREEN = "\033[32m"
 _YELLOW = "\033[33m"
 _CYAN = "\033[36m"
@@ -63,6 +64,11 @@ def _print_action(text: str) -> None:
 def _print_ok(text: str) -> None:
     """Print a '  ✔  ...' success line."""
     print(f"  {_col(_GREEN + _BOLD, '✔')}  {text}")
+
+
+def _print_remove(text: str) -> None:
+    """Print a '  - ...' line for a deletion applied to OBS."""
+    print(f"  {_col(_RED, '-')} {text}")
 
 
 def resolve_project_path(project: str) -> Path:
@@ -255,6 +261,65 @@ def _fetch_obs_file_md5s(
         }
     except Exception:
         return {}
+
+
+def _fetch_obs_package_names(apiurl: str, obs_project_name: str) -> set[str]:
+    """Return the set of package names currently in an OBS project.
+
+    Returns an empty set if the project does not exist or on any error.
+    """
+    try:
+        return {p for p in osc.core.meta_get_packagelist(apiurl, obs_project_name) if p}
+    except Exception:
+        return set()
+
+
+def _fetch_obs_subproject_names(apiurl: str, rootprj: str) -> set[str]:
+    """Return all OBS project names that are direct or indirect subprojects of rootprj.
+
+    A subproject is any project whose name starts with '<rootprj>:'.
+    Returns an empty set on any error.
+    """
+    try:
+        prefix = rootprj + ":"
+        return {
+            p for p in osc.core.meta_get_project_list(apiurl) if p.startswith(prefix)
+        }
+    except Exception:
+        return set()
+
+
+def _delete_obs_package(
+    apiurl: str, obs_project_name: str, package_name: str, dry_run: bool
+) -> None:
+    """Delete a package from OBS, or report the deletion in dry-run mode."""
+    label = f"package  {obs_project_name}/{package_name}"
+    if dry_run:
+        _print_dry(f"- {label}")
+    else:
+        try:
+            osc.core.delete_package(apiurl, obs_project_name, package_name)
+        except urllib.error.HTTPError as e:
+            _obs_api_error(e, f"deleting package {obs_project_name}/{package_name}")
+        _print_remove(label)
+
+
+def _delete_obs_project(apiurl: str, obs_project_name: str, dry_run: bool) -> None:
+    """Delete all packages in an OBS project then delete the project itself.
+
+    In dry-run mode, reports what would be deleted without making any changes.
+    """
+    for pkg in sorted(_fetch_obs_package_names(apiurl, obs_project_name)):
+        _delete_obs_package(apiurl, obs_project_name, pkg, dry_run)
+    label = f"project meta  {obs_project_name}"
+    if dry_run:
+        _print_dry(f"- {label}")
+    else:
+        try:
+            osc.core.delete_project(apiurl, obs_project_name)
+        except urllib.error.HTTPError as e:
+            _obs_api_error(e, f"deleting project {obs_project_name}")
+        _print_remove(label)
 
 
 def _child_text(elem: ET.Element, tag: str) -> str:
@@ -887,6 +952,8 @@ def cmd_sync(args):
     targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
     seen_projects: set = set()
+    local_project_names: set[str] = set()
+    local_packages_by_project: dict[str, set[str]] = {}
     dry_run_obs = args.dry_run or args.dry_run_remote
 
     for obs_project, package_path in targets:
@@ -922,6 +989,7 @@ def cmd_sync(args):
                 obs_project, project_path
             ):
                 obs_project_name = prj_name
+                local_project_names.add(prj_name)
                 if raw_proj not in seen_projects:
                     _apply_project_config(
                         apiurl,
@@ -940,6 +1008,9 @@ def cmd_sync(args):
             package_path,
             force=args.force,
             dry_run=dry_run_obs,
+        )
+        local_packages_by_project.setdefault(obs_project_name, set()).add(
+            package_path.name
         )
 
         obs_dir = package_path / "obs"
@@ -1008,6 +1079,24 @@ def cmd_sync(args):
                     message=message,
                     dry_run=dry_run_obs,
                 )
+
+    # --- orphan cleanup ---
+    # Remove packages on OBS that no longer exist locally, but only when the
+    # full package set of a project was processed (not a single-package sync).
+    if args.package is None:
+        for proj_name, local_pkgs in local_packages_by_project.items():
+            obs_pkgs = _fetch_obs_package_names(apiurl, proj_name)
+            for orphan in sorted(obs_pkgs - local_pkgs):
+                _delete_obs_package(apiurl, proj_name, orphan, dry_run_obs)
+
+    # Remove subprojects on OBS that no longer exist locally, but only when
+    # the full tree was processed (not a single-project or single-package sync).
+    # Delete deepest subprojects first so parents are empty before deletion.
+    if args.project is None:
+        obs_subprojects = _fetch_obs_subproject_names(apiurl, args.rootprj)
+        orphan_projects = obs_subprojects - local_project_names
+        for orphan_proj in sorted(orphan_projects, key=lambda x: -x.count(":")):
+            _delete_obs_project(apiurl, orphan_proj, dry_run_obs)
 
     if args.dry_run:
         suffix = " (dry run)"
