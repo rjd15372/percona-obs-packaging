@@ -123,19 +123,21 @@ def is_project(path: Path) -> bool:
     return (path / "project.yaml").exists() or not is_package(path)
 
 
-def find_packages(project_path: Path, obs_project: str):
+def find_packages(project_path: Path, obs_project: str, recursive: bool = True):
     """Recursively yield (obs_project, package_path) for all packages under a directory.
 
     obs_project is the full OBS project name (e.g. 'home:Admin:ppg:17.9').
     Subdirectories that are themselves projects (no obs/) are treated as
     subprojects and descended into, extending obs_project with the child name.
+    When recursive=False, only direct-child packages are yielded; subproject
+    directories are not descended into.
     """
     for child in sorted(project_path.iterdir()):
         if not child.is_dir():
             continue
         if is_package(child):
             yield obs_project, child
-        else:
+        elif recursive:
             yield from find_packages(child, f"{obs_project}:{child.name}")
 
 
@@ -446,10 +448,7 @@ def _obs_api_error(e: urllib.error.HTTPError, context: str) -> None:
             summary = body.strip() or summary
     msg = f"{code}: {summary}" if code else summary
     if code == "repo_dependency":
-        msg += (
-            "\n  hint: use --force to bypass, then run "
-            "'config apply --force' on all affected subprojects"
-        )
+        msg += "\n  hint: use --force to bypass"
     raise SystemExit(f"error {context}:\n  {msg}")
 
 
@@ -772,8 +771,10 @@ def _resolve_targets(args) -> list[tuple[str, Path]]:
 
     args must have: rootprj, project (optional), package (optional).
     """
+    recursive = not getattr(args, "non_recursive", False)
+
     if args.project is None:
-        targets = list(find_packages(REPO_ROOT, args.rootprj))
+        targets = list(find_packages(REPO_ROOT, args.rootprj, recursive=recursive))
         if not targets:
             print("error: no packages found under root", file=sys.stderr)
             sys.exit(1)
@@ -811,7 +812,7 @@ def _resolve_targets(args) -> list[tuple[str, Path]]:
             sys.exit(1)
         return [(full_obs_project, package_path)]
 
-    targets = list(find_packages(first_path, full_obs_project))
+    targets = list(find_packages(first_path, full_obs_project, recursive=recursive))
     if not targets:
         print(
             f"error: no packages found under project '{args.project}'", file=sys.stderr
@@ -1324,6 +1325,12 @@ def cmd_sync(args):
       sync <top-level-package>    — sync a single package with no project grouping
       sync <project> <package>    — sync a single package under a project
     """
+    if args.project_only and args.package is not None:
+        print(
+            "error: --project-only cannot be combined with a package argument",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not args.dirty:
         _check_git_clean()
     targets = _resolve_targets(args)
@@ -1358,6 +1365,16 @@ def cmd_sync(args):
                 dry_run=dry_run_obs,
             )
             seen_projects.add(raw_proj)
+
+    if args.project_only:
+        if args.dry_run:
+            suffix = " (dry run)"
+        elif args.dry_run_remote:
+            suffix = " (dry run: remote)"
+        else:
+            suffix = ""
+        _print_ok(f"sync successful{suffix}")
+        return
 
     for obs_project, package_path in targets:
         project_path = package_path.parent
@@ -1733,72 +1750,6 @@ def cmd_build_status(args):
     )
 
 
-def cmd_config_apply(args):
-    """Apply project/package configuration from yaml files to OBS.
-
-    Supported call forms:
-      config apply                        — apply config for the root project
-      config apply <project>              — apply config for a specific project
-      config apply <project> <package>    — apply config for a specific package under a project
-    """
-    if not args.dirty:
-        _check_git_clean()
-    apiurl = osc.conf.config["apiurl"]
-
-    if args.project is None:
-        # No args: apply config for the root project
-        project_path = REPO_ROOT
-        obs_project = args.rootprj
-    else:
-        project_path = resolve_project_path(args.project)
-        if not project_path.is_dir():
-            print(f"error: '{args.project}' not found under root/", file=sys.stderr)
-            sys.exit(1)
-        if is_package(project_path):
-            print(
-                f"error: '{args.project}' is a package, not a project", file=sys.stderr
-            )
-            sys.exit(1)
-        obs_project = f"{args.rootprj}:{args.project}"
-
-    project_config = load_yaml(project_path / "project.yaml")
-    obs_project_name = project_config.get("name") or obs_project
-
-    if args.package is not None:
-        package_path = project_path / args.package
-        if not package_path.is_dir():
-            print(
-                f"error: package directory not found: {package_path}", file=sys.stderr
-            )
-            sys.exit(1)
-        if not is_package(package_path):
-            print(
-                f"error: '{args.package}' is not a package (no obs/ directory found inside)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        _apply_package_config(
-            apiurl,
-            obs_project_name,
-            package_path.name,
-            package_path,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
-    else:
-        _apply_project_config(
-            apiurl,
-            obs_project_name,
-            project_path,
-            args.rootprj,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
-
-    suffix = " (dry run)" if args.dry_run else ""
-    _print_ok(f"config apply successful{suffix}")
-
-
 def _load_profile(name: str) -> dict[str, str]:
     """Load OBS connection settings from .profile/<name>.yaml.
 
@@ -1964,6 +1915,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Disable the service artifact cache; always run manual services (e.g. go_modules).",
     )
+    sync_parser.add_argument(
+        "--non-recursive",
+        action="store_true",
+        default=False,
+        dest="non_recursive",
+        help="Only sync packages directly under the specified project; do not descend into subprojects.",
+    )
+    sync_parser.add_argument(
+        "--project-only",
+        action="store_true",
+        default=False,
+        dest="project_only",
+        help="Only sync project configuration (meta and build config); skip all package syncing.",
+    )
     sync_parser.set_defaults(func=cmd_sync)
 
     build_parser_ = subparsers.add_parser(
@@ -2006,52 +1971,6 @@ def build_parser() -> argparse.ArgumentParser:
         "package", nargs="?", default=None, help=_build_package_help
     )
     build_status_parser.set_defaults(func=cmd_build_status)
-
-    config_parser = subparsers.add_parser(
-        "config",
-        help="Manage OBS project and package configuration.",
-    )
-    config_subparsers = config_parser.add_subparsers(
-        dest="config_command", metavar="<subcommand>"
-    )
-    config_subparsers.required = True
-
-    config_apply_parser = config_subparsers.add_parser(
-        "apply",
-        help="Apply configuration from project.yaml / package.yaml to OBS.",
-    )
-    config_apply_parser.add_argument(
-        "project",
-        nargs="?",
-        default=None,
-        help="Project name (colon notation, e.g. ppg:17.9). "
-        "If omitted, config is applied to all projects under root/.",
-    )
-    config_apply_parser.add_argument(
-        "package",
-        nargs="?",
-        default=None,
-        help="Package name. If given, package.yaml of this package is also applied.",
-    )
-    config_apply_parser.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help="Force update even if OBS reports a conflict.",
-    )
-    config_apply_parser.add_argument(
-        "--dirty",
-        action="store_true",
-        default=False,
-        help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
-    )
-    config_apply_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        help="Simulate actions without writing anything to OBS.",
-    )
-    config_apply_parser.set_defaults(func=cmd_config_apply)
 
     profile_parser = subparsers.add_parser(
         "profile",

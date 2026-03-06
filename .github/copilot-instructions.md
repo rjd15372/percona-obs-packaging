@@ -200,7 +200,7 @@ In dry-run mode the same `+`/`~`/`=`/`-`/`!` symbols are used — the `(dry run)
 
 ### Git safeguard
 
-`sync` and `config apply` abort if:
+`sync` aborts if:
 - the working tree has uncommitted or untracked changes (`git status --porcelain`), or
 - the HEAD commit has not been pushed to any remote (`git branch -r --contains HEAD`).
 
@@ -208,7 +208,7 @@ Use `--dirty` to skip this check (e.g. for local testing or CI pipelines that ma
 
 ### Change detection
 
-Both `sync` and `config apply` compare the desired state against what OBS currently holds **before** making any write call:
+`sync` compares the desired state against what OBS currently holds **before** making any write call:
 
 - **Project / package meta** — the managed fields (title, description, repositories) are compared as XML; OBS-managed fields (ACL entries, person/group/lock) are ignored.
 - **Project config** — the raw string is compared after stripping leading/trailing whitespace.
@@ -315,21 +315,6 @@ Status symbols (color output disabled with `NO_COLOR=1`):
 For multibuild packages, when all flavors of a repository share the same status the flavor tags are shown inline (e.g. `[:17]`). When flavors differ, each expands to its own sub-line under the repository.
 
 When multiple architectures are configured for the same repository, the highest-priority (most actionable) status is kept per flavor; arch details are not shown.
-
-### `config apply [--force] [--dirty] [--dry-run] [project] [package]`
-
-Applies `project.yaml` or `package.yaml` configuration to OBS. Updates project meta (title, description, repositories), project build config, and package meta. Does **not** upload `obs/` source files.
-
-| Call form | Effect |
-|---|---|
-| `config apply` | Apply `root/project.yaml` to the root project |
-| `config apply <project>` | Apply `<project>/project.yaml` to that project |
-| `config apply <project> <package>` | Apply `<package>/package.yaml` to that package |
-
-Options:
-- `--force` — bypass OBS conflict checks (`?force=1`); use when the server's copy was modified externally.
-- `--dirty` — skip the git safeguard.
-- `--dry-run` — simulate without writing to OBS.
 
 ## Adding a New PostgreSQL Extension
 1. Copy `ppg/17.9/percona-pg-telemetry/` as a template
@@ -449,4 +434,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` (commands: `sync`, `build trigger`, `build status`, `config apply`) |
+| Management script | `percona-obs` (commands: `sync`, `build trigger`, `build status`, `profile create`, `profile list`) |
