@@ -157,11 +157,16 @@ def build_project_meta(
             ET.SubElement(repo_elem, "path", project=ancestor, repository=repo["name"])
         # Each entry may use 'project:' for an absolute OBS project name, or
         # 'subproject:' for a name relative to rootprj (e.g. 'builddep' → '<rootprj>:builddep').
+        # Skip any path that resolves to this project itself — a project cannot
+        # reference itself as a repository path (e.g. builddep inheriting a
+        # 'subproject: builddep' entry from the root project.yaml).
         for path_info in repo.get("paths", []):
             if "subproject" in path_info:
                 proj = f"{rootprj}:{path_info['subproject']}"
             else:
                 proj = path_info["project"]
+            if proj == obs_project_name:
+                continue
             ET.SubElement(
                 repo_elem,
                 "path",
@@ -798,6 +803,53 @@ def _iter_project_chain(obs_project: str, project_path: Path):
     yield from reversed(chain)
 
 
+def _topo_sort_projects(
+    all_projects: dict[str, tuple[str, Path]], rootprj: str
+) -> list[str]:
+    """Return project keys sorted so 'subproject:' dependencies come before the
+    projects that reference them.  Depth (deepest first) is the secondary key
+    within the same dependency tier.
+    """
+    local_keys = set(all_projects)
+    # Map OBS project name → raw_proj key (handles 'name:' overrides in project.yaml)
+    name_to_raw: dict[str, str] = {
+        prj_name: raw_proj for raw_proj, (prj_name, _) in all_projects.items()
+    }
+    # Build dependency graph: raw_proj → set of raw_proj keys it depends on
+    deps: dict[str, set[str]] = {p: set() for p in local_keys}
+    for raw_proj, (_, proj_path) in all_projects.items():
+        config = _load_project_config_with_inheritance(proj_path)
+        for repo in config.get("repositories", []):
+            for path_info in repo.get("paths", []):
+                if "subproject" in path_info:
+                    dep_name = f"{rootprj}:{path_info['subproject']}"
+                    dep_key = name_to_raw.get(dep_name) or (
+                        dep_name if dep_name in local_keys else None
+                    )
+                    if dep_key and dep_key != raw_proj:
+                        deps[raw_proj].add(dep_key)
+    # Kahn's topological sort; depth (-colon count) is the secondary tie-breaker
+    in_degree = {p: len(deps[p]) for p in local_keys}
+    ready = sorted(
+        [p for p, d in in_degree.items() if d == 0], key=lambda x: -x.count(":")
+    )
+    result: list[str] = []
+    while ready:
+        p = ready.pop(0)
+        result.append(p)
+        for other in local_keys:
+            if p in deps[other]:
+                in_degree[other] -= 1
+                if in_degree[other] == 0:
+                    ready.append(other)
+                    ready.sort(key=lambda x: -x.count(":"))
+    # Append any remaining nodes (cycle guard — should not happen in practice)
+    result.extend(
+        sorted((p for p in local_keys if in_degree[p] > 0), key=lambda x: -x.count(":"))
+    )
+    return result
+
+
 def _check_git_clean() -> None:
     """Abort if the working tree has uncommitted changes or HEAD is not pushed to any remote."""
     repo_root = Path(__file__).parent
@@ -986,10 +1038,11 @@ def cmd_sync(args):
     local_packages_by_project: dict[str, set[str]] = {}
     dry_run_obs = args.dry_run or args.dry_run_remote
 
-    # Pre-pass: apply all project configs, deepest subprojects first.
-    # This ensures a subproject referenced in a parent project's repository
-    # paths already exists on OBS before the parent project meta is written,
-    # avoiding repository_access_failure errors.
+    # Pre-pass: apply all project configs in dependency order — projects referenced
+    # via 'subproject:' first, then deeper subprojects before their parents.
+    # This ensures any project referenced in a repository path already exists on
+    # OBS before the project that references it is written, avoiding
+    # repository_access_failure errors.
     if args.package is None:
         all_projects: dict[str, tuple[str, Path]] = {}
         for obs_project, package_path in targets:
@@ -999,7 +1052,7 @@ def cmd_sync(args):
                 local_project_names.add(prj_name)
                 if raw_proj not in all_projects:
                     all_projects[raw_proj] = (prj_name, proj_path)
-        for raw_proj in sorted(all_projects, key=lambda x: -x.count(":")):
+        for raw_proj in _topo_sort_projects(all_projects, args.rootprj):
             prj_name, proj_path = all_projects[raw_proj]
             _apply_project_config(
                 apiurl,
@@ -1018,8 +1071,9 @@ def cmd_sync(args):
 
         if args.package is not None:
             # Single-package target: ensure the project hierarchy exists on OBS.
-            # If the immediate project is missing, apply the full chain deepest-first
-            # so that subprojects referenced in parent paths are created in order.
+            # If the immediate project is missing, apply the full chain in
+            # dependency order so projects referenced via 'subproject:' are
+            # created before the projects that reference them.
             if not _obs_project_exists(apiurl, obs_project_name):
                 chain: dict[str, tuple[str, Path]] = {}
                 for raw_proj, prj_name, proj_path in _iter_project_chain(
@@ -1028,7 +1082,7 @@ def cmd_sync(args):
                     local_project_names.add(prj_name)
                     if raw_proj not in chain:
                         chain[raw_proj] = (prj_name, proj_path)
-                for raw_proj in sorted(chain, key=lambda x: -x.count(":")):
+                for raw_proj in _topo_sort_projects(chain, args.rootprj):
                     prj_name, proj_path = chain[raw_proj]
                     if raw_proj not in seen_projects:
                         _apply_project_config(
