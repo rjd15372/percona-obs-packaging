@@ -82,9 +82,11 @@ title: My Project Title
 description: "Human-readable description."
 repositories:
   - name: RockyLinux_9         # OBS repository name
-    path:
-      project: openSUSE.org:RockyLinux:9   # upstream OBS project providing the build environment
-      repository: standard
+    paths:
+      - project: openSUSE.org:RockyLinux:9   # upstream OBS project providing the build environment
+        repository: standard
+      - subproject: builddep   # relative reference: resolves to <rootprj>:builddep
+        repository: RockyLinux_9
     archs: [x86_64]
 project-config: |              # raw OBS project config string
   %if "%_repository" == "RockyLinux_9"
@@ -93,7 +95,7 @@ project-config: |              # raw OBS project config string
 ```
 
 - `name` — absent or empty means the OBS project name is derived from the directory path relative to `root/` joined with `--rootprj` using colons (e.g. `home:Admin:ppg:17.9`). Set it explicitly only when the OBS project name must differ from the directory path.
-- `repositories[].path` — points to an existing OBS project/repo that provides the base build environment (OS packages, toolchain).
+- `repositories[].paths` — list of path entries providing the base build environment. Each entry uses either `project:` (absolute OBS project name) or `subproject:` (resolved as `<rootprj>:<subproject>`) plus `repository:`.
 - `project-config` — passed verbatim to the OBS project config API; used for RPM macros, module expansion flags, etc.
 - `title` and `description` are informational only and never inherited by child projects.
 
@@ -150,15 +152,20 @@ OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-ru
 
 ### Output format
 
-`percona-obs` prints only the actions that produce an actual change. Each line has a two-character prefix, color-coded when stdout is a TTY (set `NO_COLOR=1` to disable):
+`percona-obs` prints one line per resource, always — including unchanged ones. Each line has a two-character prefix, color-coded when stdout is a TTY (set `NO_COLOR=1` to disable):
 
 | Prefix | Color | Meaning |
 |---|---|---|
-| `  + ` | green | Change applied to OBS |
-| `  ~ ` | yellow | Would change (dry-run mode only — nothing written) |
+| `  + ` | green | Resource created on OBS (did not exist before) |
+| `  ~ ` | yellow | Resource updated on OBS (existed, content changed) |
+| `  = ` | dim | Resource unchanged (OBS already matches desired state) |
+| `  - ` | red | Resource deleted from OBS (orphan cleanup) |
+| `  ! ` | yellow | Uncertain — OBS-only file skipped because services were not run (dry-run only) |
 | `  > ` | cyan | Action taken: local service run or OBS service triggered |
 | `  ✔ ` | bold green | Command completed successfully |
 | `  · ` | dim | Debug message (only shown with `--verbose`) |
+
+In dry-run mode the same `+`/`~`/`=`/`-`/`!` symbols are used — the `(dry run)` note on the final `✔` line indicates nothing was written.
 
 ### Git safeguard
 
@@ -174,9 +181,9 @@ Both `sync` and `config apply` compare the desired state against what OBS curren
 
 - **Project / package meta** — the managed fields (title, description, repositories) are compared as XML; OBS-managed fields (ACL entries, person/group/lock) are ignored.
 - **Project config** — the raw string is compared after stripping leading/trailing whitespace.
-- **`obs/` files** — each file's MD5 is compared to the MD5 returned by the OBS source directory listing. Only changed files are uploaded. Files present on OBS but absent locally are deleted. All uploads and deletions are committed as a single OBS source revision.
+- **`obs/` files** — each file's MD5 is compared to the MD5 returned by the OBS source directory listing. Only changed files are uploaded. Files present on OBS but absent locally are deleted (real sync) or marked `!` (dry-run, where they may be service-generated artifacts). All uploads and deletions are committed as a single OBS source revision.
 
-If nothing changed, no API write call is made and no output line is printed for that item. Use `--force` to bypass comparison and always write.
+Every resource is always printed with its status (`+`/`~`/`=`/`-`/`!`). The `=` line is printed even when nothing changed. Use `--force` to bypass comparison and always write.
 
 ### `sync [--force] [--dirty] [--dry-run] [--dry-run-remote] [--no-services] [-m MSG] [project] [package]`
 
@@ -192,8 +199,8 @@ Syncs local packaging files to OBS, creating or updating projects and packages (
 Options:
 - `--force` — bypass OBS conflict checks; always write meta and files regardless of diff.
 - `--dirty` — skip the git safeguard (allow uncommitted changes or an unpushed HEAD).
-- `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. Outputs `  ~ ` lines instead of `  + `. Local services are **not** run in this mode.
-- `--dry-run-remote` — run local services for real, then report what would be uploaded to OBS without writing. Use to verify manual services work before committing. Outputs `  ~ ` lines for OBS changes.
+- `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. The same `+`/`~`/`=`/`-`/`!` symbols are used. Local services are **not** run; OBS-only files (likely service outputs) are shown with `!` instead of `-`.
+- `--dry-run-remote` — run local services for real, then report what would be uploaded to OBS without writing. Use to verify manual services work before committing. All OBS writes are skipped but the `+`/`~`/`=` output reflects what would change.
 - `--no-services` — skip local service execution; upload `obs/` as-is even if `_service` declares manual services.
 - `-m MSG` / `--message MSG` — commit message recorded in the OBS source revision. When omitted, a message is generated automatically:
   - Normal: `sync: <branch>@<short-sha> (<remote_url>)`

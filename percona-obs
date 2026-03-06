@@ -46,14 +46,19 @@ def _col(code: str, text: str) -> str:
     return f"{code}{text}{_RESET}" if _USE_COLOR else text
 
 
-def _print_change(text: str) -> None:
-    """Print a '  + ...' line for a change applied to OBS."""
+def _print_create(text: str) -> None:
+    """Print a '  + ...' line for a resource being created."""
     print(f"  {_col(_GREEN, '+')} {text}")
 
 
-def _print_dry(text: str) -> None:
-    """Print a '  ~ ...' line for a simulated change (dry-run)."""
+def _print_update(text: str) -> None:
+    """Print a '  ~ ...' line for a resource being updated."""
     print(f"  {_col(_YELLOW, '~')} {text}")
+
+
+def _print_same(text: str) -> None:
+    """Print a '  = ...' line for an unchanged resource."""
+    print(f"  {_col(_DIM, '=')} {text}")
 
 
 def _print_action(text: str) -> None:
@@ -67,7 +72,7 @@ def _print_ok(text: str) -> None:
 
 
 def _print_remove(text: str) -> None:
-    """Print a '  - ...' line for a deletion applied to OBS."""
+    """Print a '  - ...' line for a resource being deleted."""
     print(f"  {_col(_RED, '-')} {text}")
 
 
@@ -299,14 +304,12 @@ def _delete_obs_package(
 ) -> None:
     """Delete a package from OBS, or report the deletion in dry-run mode."""
     label = f"package  {obs_project_name}/{package_name}"
-    if dry_run:
-        _print_dry(f"- {label}")
-    else:
+    if not dry_run:
         try:
             osc.core.delete_package(apiurl, obs_project_name, package_name)
         except urllib.error.HTTPError as e:
             _obs_api_error(e, f"deleting package {obs_project_name}/{package_name}")
-        _print_remove(label)
+    _print_remove(label)
 
 
 def _delete_obs_project(apiurl: str, obs_project_name: str, dry_run: bool) -> None:
@@ -317,14 +320,12 @@ def _delete_obs_project(apiurl: str, obs_project_name: str, dry_run: bool) -> No
     for pkg in sorted(_fetch_obs_package_names(apiurl, obs_project_name)):
         _delete_obs_package(apiurl, obs_project_name, pkg, dry_run)
     label = f"project meta  {obs_project_name}"
-    if dry_run:
-        _print_dry(f"- {label}")
-    else:
+    if not dry_run:
         try:
             osc.core.delete_project(apiurl, obs_project_name)
         except urllib.error.HTTPError as e:
             _obs_api_error(e, f"deleting project {obs_project_name}")
-        _print_remove(label)
+    _print_remove(label)
 
 
 def _child_text(elem: ET.Element, tag: str) -> str:
@@ -429,6 +430,8 @@ def _apply_project_config(
     --force is given (which bypasses both the local comparison and OBS conflict checks).
     With --dry-run, read-only OBS calls are made to compute the diff but no
     changes are written.
+
+    Prints '+' for creates, '~' for updates, '=' for unchanged resources.
     """
     project_config = _load_project_config_with_inheritance(project_path)
     meta = build_project_meta(
@@ -443,105 +446,95 @@ def _apply_project_config(
     logger.debug(f"  meta XML:\n{meta}")
     current = b""
     project_meta_exists = True
-    if not force:
-        try:
-            logger.debug(f"fetching project meta: {obs_project_name}")
-            current = _decode_obs_response(
-                osc.core.show_project_meta(apiurl, obs_project_name)
-            ).encode()
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                project_meta_exists = False
-            else:
-                _obs_api_error(e, f"fetching project meta for {obs_project_name}")
-        if project_meta_exists and _project_meta_subset_equal(current, meta):
-            logger.debug(f"project meta unchanged: {obs_project_name}")
+    try:
+        logger.debug(f"fetching project meta: {obs_project_name}")
+        current = _decode_obs_response(
+            osc.core.show_project_meta(apiurl, obs_project_name)
+        ).encode()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            project_meta_exists = False
         else:
-            action = "creating" if not project_meta_exists else "updating"
-            logger.debug(f"{action} project meta: {obs_project_name}")
-            if dry_run:
-                _print_dry(f"project meta  {obs_project_name}")
-            else:
-                try:
-                    osc.core.edit_meta(
-                        metatype="prj",
-                        path_args=(obs_project_name,),
-                        data=[meta],
-                        force=False,
-                        apiurl=apiurl,
-                    )
-                except urllib.error.HTTPError as e:
-                    _obs_api_error(e, f"{action} project meta for {obs_project_name}")
-                _print_change(f"project meta  {obs_project_name}")
-    else:
-        logger.debug(f"force-updating project meta: {obs_project_name}")
-        if dry_run:
-            _print_dry(f"project meta  {obs_project_name}")
-        else:
+            _obs_api_error(e, f"fetching project meta for {obs_project_name}")
+
+    if not project_meta_exists:
+        logger.debug(f"creating project meta: {obs_project_name}")
+        if not dry_run:
             try:
                 osc.core.edit_meta(
                     metatype="prj",
                     path_args=(obs_project_name,),
                     data=[meta],
-                    force=True,
+                    force=False,
                     apiurl=apiurl,
                 )
             except urllib.error.HTTPError as e:
-                _obs_api_error(e, f"force-updating project meta for {obs_project_name}")
-            _print_change(f"project meta  {obs_project_name}")
+                _obs_api_error(e, f"creating project meta for {obs_project_name}")
+        _print_create(f"project meta  {obs_project_name}")
+    elif force or not _project_meta_subset_equal(current, meta):
+        logger.debug(f"updating project meta: {obs_project_name}")
+        if not dry_run:
+            try:
+                osc.core.edit_meta(
+                    metatype="prj",
+                    path_args=(obs_project_name,),
+                    data=[meta],
+                    force=force,
+                    apiurl=apiurl,
+                )
+            except urllib.error.HTTPError as e:
+                _obs_api_error(e, f"updating project meta for {obs_project_name}")
+        _print_update(f"project meta  {obs_project_name}")
+    else:
+        logger.debug(f"project meta unchanged: {obs_project_name}")
+        _print_same(f"project meta  {obs_project_name}")
 
     # --- project config ---
     project_config_str = project_config.get("project-config") or ""
     current_conf = ""
     project_conf_exists = True
-    if not force:
-        try:
-            logger.debug(f"fetching project config: {obs_project_name}")
-            current_conf = _decode_obs_response(
-                osc.core.show_project_conf(apiurl, obs_project_name)
-            )
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                project_conf_exists = False
-            else:
-                _obs_api_error(e, f"fetching project config for {obs_project_name}")
-        if project_conf_exists and current_conf.strip() == project_config_str.strip():
-            logger.debug(f"project config unchanged: {obs_project_name}")
+    try:
+        logger.debug(f"fetching project config: {obs_project_name}")
+        current_conf = _decode_obs_response(
+            osc.core.show_project_conf(apiurl, obs_project_name)
+        )
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            project_conf_exists = False
         else:
-            action = "creating" if not project_conf_exists else "updating"
-            logger.debug(f"{action} project config: {obs_project_name}")
-            if dry_run:
-                _print_dry(f"project config  {obs_project_name}")
-            else:
-                try:
-                    osc.core.edit_meta(
-                        metatype="prjconf",
-                        path_args=(obs_project_name,),
-                        data=[project_config_str],
-                        force=False,
-                        apiurl=apiurl,
-                    )
-                except urllib.error.HTTPError as e:
-                    _obs_api_error(e, f"{action} project config for {obs_project_name}")
-                _print_change(f"project config  {obs_project_name}")
-    else:
-        logger.debug(f"force-updating project config: {obs_project_name}")
-        if dry_run:
-            _print_dry(f"project config  {obs_project_name}")
-        else:
+            _obs_api_error(e, f"fetching project config for {obs_project_name}")
+
+    if not project_conf_exists:
+        logger.debug(f"creating project config: {obs_project_name}")
+        if not dry_run:
             try:
                 osc.core.edit_meta(
                     metatype="prjconf",
                     path_args=(obs_project_name,),
                     data=[project_config_str],
-                    force=True,
+                    force=False,
                     apiurl=apiurl,
                 )
             except urllib.error.HTTPError as e:
-                _obs_api_error(
-                    e, f"force-updating project config for {obs_project_name}"
+                _obs_api_error(e, f"creating project config for {obs_project_name}")
+        _print_create(f"project config  {obs_project_name}")
+    elif force or current_conf.strip() != project_config_str.strip():
+        logger.debug(f"updating project config: {obs_project_name}")
+        if not dry_run:
+            try:
+                osc.core.edit_meta(
+                    metatype="prjconf",
+                    path_args=(obs_project_name,),
+                    data=[project_config_str],
+                    force=force,
+                    apiurl=apiurl,
                 )
-            _print_change(f"project config  {obs_project_name}")
+            except urllib.error.HTTPError as e:
+                _obs_api_error(e, f"updating project config for {obs_project_name}")
+        _print_update(f"project config  {obs_project_name}")
+    else:
+        logger.debug(f"project config unchanged: {obs_project_name}")
+        _print_same(f"project config  {obs_project_name}")
 
 
 def _apply_package_config(
@@ -557,6 +550,8 @@ def _apply_package_config(
     Skips the API call when the content already matches what OBS has, unless
     --force is given.  With --dry-run, read-only OBS calls are made to compute
     the diff but no changes are written.
+
+    Prints '+' for creates, '~' for updates, '=' for unchanged resources.
     """
     package_config = load_yaml(package_path / "package.yaml")
     meta = build_package_meta(
@@ -568,49 +563,56 @@ def _apply_package_config(
 
     logger.debug(f"  package meta XML:\n{meta}")
     package_exists = True
-    if not force:
-        try:
-            logger.debug(f"fetching package meta: {obs_project_name}/{package_name}")
-            current = _decode_obs_response(
-                osc.core.show_package_meta(apiurl, obs_project_name, package_name)
-            ).encode()
-            if _package_meta_subset_equal(current, meta):
-                logger.debug(
-                    f"package meta unchanged: {obs_project_name}/{package_name}"
-                )
-                return
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                package_exists = False
-            else:
-                _obs_api_error(
-                    e,
-                    f"fetching package meta for {obs_project_name}/{package_name}",
-                )
-
-    if force:
-        action = "force-updating"
-    elif package_exists:
-        action = "updating"
-    else:
-        action = "creating"
-    logger.debug(f"{action} package meta: {obs_project_name}/{package_name}")
-    if dry_run:
-        _print_dry(f"package  {obs_project_name}/{package_name}")
-    else:
-        try:
-            osc.core.edit_meta(
-                metatype="pkg",
-                path_args=(obs_project_name, package_name),
-                data=[meta],
-                force=force,
-                apiurl=apiurl,
-            )
-        except urllib.error.HTTPError as e:
+    current = b""
+    try:
+        logger.debug(f"fetching package meta: {obs_project_name}/{package_name}")
+        current = _decode_obs_response(
+            osc.core.show_package_meta(apiurl, obs_project_name, package_name)
+        ).encode()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            package_exists = False
+        else:
             _obs_api_error(
-                e, f"{action} package meta for {obs_project_name}/{package_name}"
+                e,
+                f"fetching package meta for {obs_project_name}/{package_name}",
             )
-        _print_change(f"package  {obs_project_name}/{package_name}")
+
+    if not package_exists:
+        logger.debug(f"creating package meta: {obs_project_name}/{package_name}")
+        if not dry_run:
+            try:
+                osc.core.edit_meta(
+                    metatype="pkg",
+                    path_args=(obs_project_name, package_name),
+                    data=[meta],
+                    force=False,
+                    apiurl=apiurl,
+                )
+            except urllib.error.HTTPError as e:
+                _obs_api_error(
+                    e, f"creating package meta for {obs_project_name}/{package_name}"
+                )
+        _print_create(f"package  {obs_project_name}/{package_name}")
+    elif force or not _package_meta_subset_equal(current, meta):
+        logger.debug(f"updating package meta: {obs_project_name}/{package_name}")
+        if not dry_run:
+            try:
+                osc.core.edit_meta(
+                    metatype="pkg",
+                    path_args=(obs_project_name, package_name),
+                    data=[meta],
+                    force=force,
+                    apiurl=apiurl,
+                )
+            except urllib.error.HTTPError as e:
+                _obs_api_error(
+                    e, f"updating package meta for {obs_project_name}/{package_name}"
+                )
+        _print_update(f"package  {obs_project_name}/{package_name}")
+    else:
+        logger.debug(f"package meta unchanged: {obs_project_name}/{package_name}")
+        _print_same(f"package  {obs_project_name}/{package_name}")
 
 
 def _upload_obs_files(
@@ -630,10 +632,17 @@ def _upload_obs_files(
     one per file, and skips the commit entirely when nothing changed.
     With --dry-run, read-only OBS calls are made to compute the diff but no
     files are uploaded or committed.
+
+    Prints '=' when no files changed, '~' with a per-file breakdown for
+    certain changes. In dry-run mode, OBS-only files are shown with '!' rather
+    than '-' because they may be service-generated artifacts whose fate cannot
+    be determined without running the services.
     """
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
-    changed: list[str] = []
+    new_files: list[str] = []
+    updated_files: list[str] = []
     removed: list[str] = []
+    uncertain: list[str] = []
     local_files: set[str] = set()
 
     for filepath in sorted(obs_dir.iterdir()):
@@ -644,7 +653,10 @@ def _upload_obs_files(
         if obs_md5s.get(filepath.name) == local_md5:
             logger.debug(f"{filepath.name} unchanged (md5 match)")
             continue
-        changed.append(filepath.name)
+        if filepath.name in obs_md5s:
+            updated_files.append(filepath.name)
+        else:
+            new_files.append(filepath.name)
         if not dry_run:
             logger.debug(f"staging {filepath.name} → {obs_project_name}/{package_name}")
             url = osc.core.makeurl(
@@ -655,8 +667,12 @@ def _upload_obs_files(
             osc.connection.http_PUT(url, file=str(filepath))
 
     for obs_name in sorted(obs_md5s.keys() - local_files):
-        removed.append(obs_name)
-        if not dry_run:
+        if dry_run:
+            # In dry-run mode services were not run, so OBS-only files may be
+            # service-generated artifacts rather than genuine deletions.
+            uncertain.append(obs_name)
+        else:
+            removed.append(obs_name)
             logger.debug(f"deleting {obs_name} → {obs_project_name}/{package_name}")
             url = osc.core.makeurl(
                 apiurl,
@@ -665,34 +681,43 @@ def _upload_obs_files(
             )
             osc.connection.http_DELETE(url)
 
-    all_changed = changed + removed
-    if not all_changed:
+    certain = new_files + updated_files + removed
+    if not certain and not uncertain:
         logger.debug(f"no files changed: {obs_project_name}/{package_name}")
+        _print_same(f"{len(local_files)} files  {obs_project_name}/{package_name}")
         return
 
-    if dry_run:
-        _print_dry(f"{len(all_changed)} files  {obs_project_name}/{package_name}")
-        for name in changed:
-            print(f"      |_ {name}")
-        for name in removed:
-            print(f"      |_ - {name}")
-        return
+    if not dry_run:
+        commit_query: dict = {"cmd": "commit"}
+        if message:
+            commit_query["comment"] = message
+        logger.debug(
+            f"committing {len(new_files)} new, {len(updated_files)} updated, "
+            f"{len(removed)} deleted: {obs_project_name}/{package_name}"
+        )
+        url = osc.core.makeurl(
+            apiurl, ["source", obs_project_name, package_name], query=commit_query
+        )
+        osc.connection.http_POST(url)
 
-    commit_query: dict = {"cmd": "commit"}
-    if message:
-        commit_query["comment"] = message
-    logger.debug(
-        f"committing {len(changed)} file(s), {len(removed)} deletion(s): {obs_project_name}/{package_name}"
-    )
-    url = osc.core.makeurl(
-        apiurl, ["source", obs_project_name, package_name], query=commit_query
-    )
-    osc.connection.http_POST(url)
-    _print_change(f"{len(all_changed)} files  {obs_project_name}/{package_name}")
-    for name in changed:
-        print(f"      |_ {name}")
+    total = len(certain) + len(uncertain)
+    label = f"{total} files  {obs_project_name}/{package_name}"
+    if certain:
+        _print_update(label)
+    else:
+        # Only uncertain files: package is probably unchanged but service
+        # outputs on OBS cannot be verified without running the services.
+        print(f"  {_col(_YELLOW, '!')} {label}")
+    for name in new_files:
+        print(f"      |_ {_col(_GREEN, '+')} {name}")
+    for name in updated_files:
+        print(f"      |_ {_col(_YELLOW, '~')} {name}")
     for name in removed:
-        print(f"      |_ - {name}")
+        print(f"      |_ {_col(_RED, '-')} {name}")
+    for name in uncertain:
+        print(
+            f"      |_ {_col(_YELLOW, '!')} {name}  (service output, skipped in dry-run)"
+        )
 
 
 def _resolve_targets(args) -> list[tuple[str, Path]]:
@@ -961,22 +986,50 @@ def cmd_sync(args):
     local_packages_by_project: dict[str, set[str]] = {}
     dry_run_obs = args.dry_run or args.dry_run_remote
 
+    # Pre-pass: apply all project configs, deepest subprojects first.
+    # This ensures a subproject referenced in a parent project's repository
+    # paths already exists on OBS before the parent project meta is written,
+    # avoiding repository_access_failure errors.
+    if args.package is None:
+        all_projects: dict[str, tuple[str, Path]] = {}
+        for obs_project, package_path in targets:
+            for raw_proj, prj_name, proj_path in _iter_project_chain(
+                obs_project, package_path.parent
+            ):
+                local_project_names.add(prj_name)
+                if raw_proj not in all_projects:
+                    all_projects[raw_proj] = (prj_name, proj_path)
+        for raw_proj in sorted(all_projects, key=lambda x: -x.count(":")):
+            prj_name, proj_path = all_projects[raw_proj]
+            _apply_project_config(
+                apiurl,
+                prj_name,
+                proj_path,
+                args.rootprj,
+                force=args.force,
+                dry_run=dry_run_obs,
+            )
+            seen_projects.add(raw_proj)
+
     for obs_project, package_path in targets:
         project_path = package_path.parent
-        obs_project_name = obs_project
+        project_config = load_yaml(project_path / "project.yaml")
+        obs_project_name = project_config.get("name") or obs_project
 
         if args.package is not None:
-            # User targeted a specific package — resolve obs_project_name and skip the
-            # chain walk if the project already exists on OBS (fast path, one GET).
-            # If the project does not exist yet, fall back to walking the full chain
-            # so the hierarchy is created before the package is attempted.
-            project_config = load_yaml(project_path / "project.yaml")
-            obs_project_name = project_config.get("name") or obs_project
+            # Single-package target: ensure the project hierarchy exists on OBS.
+            # If the immediate project is missing, apply the full chain deepest-first
+            # so that subprojects referenced in parent paths are created in order.
             if not _obs_project_exists(apiurl, obs_project_name):
+                chain: dict[str, tuple[str, Path]] = {}
                 for raw_proj, prj_name, proj_path in _iter_project_chain(
                     obs_project, project_path
                 ):
-                    obs_project_name = prj_name
+                    local_project_names.add(prj_name)
+                    if raw_proj not in chain:
+                        chain[raw_proj] = (prj_name, proj_path)
+                for raw_proj in sorted(chain, key=lambda x: -x.count(":")):
+                    prj_name, proj_path = chain[raw_proj]
                     if raw_proj not in seen_projects:
                         _apply_project_config(
                             apiurl,
@@ -987,24 +1040,6 @@ def cmd_sync(args):
                             dry_run=dry_run_obs,
                         )
                         seen_projects.add(raw_proj)
-        else:
-            # Syncing a whole project or everything — ensure the full project hierarchy
-            # is created/updated first (seen_projects deduplicates across packages).
-            for raw_proj, prj_name, proj_path in _iter_project_chain(
-                obs_project, project_path
-            ):
-                obs_project_name = prj_name
-                local_project_names.add(prj_name)
-                if raw_proj not in seen_projects:
-                    _apply_project_config(
-                        apiurl,
-                        prj_name,
-                        proj_path,
-                        args.rootprj,
-                        force=args.force,
-                        dry_run=dry_run_obs,
-                    )
-                    seen_projects.add(raw_proj)
 
         _apply_package_config(
             apiurl,
@@ -1036,7 +1071,7 @@ def cmd_sync(args):
                 ]
                 for svc_name in manual_svc_names:
                     if args.dry_run and not args.dry_run_remote:
-                        _print_dry(
+                        _print_update(
                             f"service {svc_name}  {obs_project_name}/{package_path.name}"
                         )
                     else:
