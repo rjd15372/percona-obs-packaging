@@ -135,7 +135,7 @@ alias obs='./percona-obs -P local'
 ### Preview all changes without writing to OBS
 
 ```sh
-obs sync --dry-run
+obs sync push --dry-run
 ```
 
 Shows everything that would be created or updated. Nothing is written to OBS.
@@ -143,7 +143,7 @@ Shows everything that would be created or updated. Nothing is written to OBS.
 ### Preview changes and also run local services (Go vendoring, etc.)
 
 ```sh
-obs sync --dry-run-remote
+obs sync push --dry-run-remote
 ```
 
 Same as `--dry-run` but also runs `mode="manual"` services locally, letting you verify
@@ -152,7 +152,7 @@ that tools like `go_modules` work correctly before committing anything to OBS.
 ### Sync all packages
 
 ```sh
-obs sync
+obs sync push
 ```
 
 Walks the entire `root/` tree, creates or updates all OBS projects and packages, and
@@ -161,7 +161,7 @@ uploads any changed `obs/` files as a single revision per package.
 ### Sync a single standalone package
 
 ```sh
-obs sync percona-telemetry-agent
+obs sync push percona-telemetry-agent
 ```
 
 ### Sync a single PostgreSQL extension
@@ -170,14 +170,87 @@ PG extensions live under a subproject (`ppg/17.9/`). Pass the subproject and pac
 name separately:
 
 ```sh
-obs sync ppg:17.9 percona-pg-telemetry
+obs sync push ppg:17.9 percona-pg-telemetry
 ```
 
 ### Sync all packages under a subproject
 
 ```sh
-obs sync ppg:17.9
+obs sync push ppg:17.9
 ```
+
+---
+
+## Branching from an existing profile
+
+### What it does
+
+`--branch-from <profile>` speeds up syncing a new environment by reusing already-built
+binaries from an existing OBS project instead of re-uploading sources and waiting for
+every package to build again from scratch.
+
+For each package that is **unchanged** since the branch profile's last sync, `percona-obs`
+uploads only a small `_aggregate` file. OBS then pulls the pre-built binaries directly
+from the branch project's repository — no source fetch, no compilation, no wait.
+Only packages that have **actually changed** are uploaded with their full source files
+and built fresh.
+
+### Typical workflow
+
+Suppose you maintain a stable production profile `prod` (`home:Admin:percona`) and want
+to spin up a test environment (`home:Admin:percona-test`) that tracks a feature branch.
+Most packages are identical; only one or two have been modified.
+
+**Step 1 — Create a profile for the new environment:**
+
+```sh
+./percona-obs -A http://my-obs.local:8000 -R home:Admin:percona-test profile create test
+```
+
+**Step 2 — Sync the test environment, branching from prod:**
+
+```sh
+obs -P test sync push --branch-from prod --dirty
+```
+
+For every unchanged package, `percona-obs` uploads an `_aggregate` pointing at
+`home:Admin:percona` — the prod project — and OBS serves the binaries from there
+instantly. Modified packages get their sources uploaded and build normally.
+
+Output example:
+
+```
+  + project meta  home:Admin:percona-test
+  + project meta  home:Admin:percona-test:ppg
+  + project meta  home:Admin:percona-test:ppg:17.9
+  = files  home:Admin:percona-test:ppg:17.9/percona-postgresql17
+  @ home:Admin:percona-test:ppg:17.9/percona-postgresql17  → home:Admin:percona:ppg:17.9/percona-postgresql17
+  ~ 4 files  home:Admin:percona-test:ppg:17.9/percona-pg-telemetry   ← changed, uploaded
+  ✔  sync successful
+```
+
+**Step 3 — Sync again without branching (promote to full sources):**
+
+When you later want to migrate the test environment to build everything independently,
+just run without `--branch-from`. `percona-obs` detects each `_aggregate` and checks
+whether the content has actually changed before deciding to replace it with sources:
+
+```sh
+obs -P test sync push
+```
+
+### How unchanged packages are detected
+
+`percona-obs` uses a two-level decision for each package:
+
+1. **Fast path** — reads the last OBS revision comment on the branch project. If it
+   contains a clean `sync: <branch>@<sha> (...)` message, `git log` checks whether any
+   local commits touch that package since that SHA. No commits → aggregate. Commits → upload.
+
+2. **Content check fallback** — used when the revision message is absent, in a different
+   format, or was written with `--dirty`. Compares MD5s of every local `obs/` file against
+   what OBS holds, and also verifies that the upstream source commit hash in the `.obsinfo`
+   file matches the current remote HEAD via `git ls-remote`. Both must match → aggregate.
 
 ---
 
@@ -200,14 +273,15 @@ OBS to re-fetch sources and queue a new build.
 obs build status
 ```
 
-Prints a color-coded tree of live build statuses fetched from OBS:
+Prints a color-coded tree of live build statuses fetched from OBS. Succeeded packages
+display the built version next to the status:
 
 ```
 home:Admin:percona
 ├── percona-telemetry-agent
-│   ├── RockyLinux_9           ✔ succeeded
-│   ├── Debian_13              ✔ succeeded
-│   └── xUbuntu_24.04          ✔ succeeded
+│   ├── RockyLinux_9           ✔ succeeded  3.5.26-6.1
+│   ├── Debian_13              ✔ succeeded  3.5.26-6.1
+│   └── xUbuntu_24.04          ✔ succeeded  3.5.26-6.1
 ├── builddep
 │   ├── golang-1.25
 │   │   ├── RockyLinux_9       ✔ succeeded
@@ -220,12 +294,12 @@ home:Admin:percona
 └── ppg
     └── 17.9
         ├── etcd
-        │   ├── RockyLinux_9   ✔ succeeded
-        │   ├── Debian_13      ✔ succeeded
-        │   └── xUbuntu_24.04  ✔ succeeded
+        │   ├── RockyLinux_9   ✔ succeeded  3.5.26-6.1
+        │   ├── Debian_13      ✔ succeeded  3.5.26-6.1
+        │   └── xUbuntu_24.04  ✔ succeeded  3.5.26-6.1
         └── percona-pg-telemetry
-            ├── RockyLinux_9   ✔ succeeded  [:17]
-            ├── Debian_13      ✔ succeeded  [:17]
+            ├── RockyLinux_9   ✔ succeeded  [:17]  1.0.0-1.1
+            ├── Debian_13      ✔ succeeded  [:17]  1.0.0-1.1
             └── xUbuntu_24.04  ◌ scheduled  [:17]
 ```
 
@@ -248,6 +322,38 @@ Set `NO_COLOR=1` to disable color output.
 
 ---
 
+## Deleting a project from OBS
+
+### Preview what would be deleted
+
+```sh
+obs sync delete --dry-run
+obs sync delete ppg:17.9 --dry-run
+```
+
+### Delete a full project tree
+
+```sh
+obs sync delete --yes --recursive
+```
+
+Deletes the root project and all sub-projects (deepest first). Prompts for confirmation
+unless `--yes` is given. Use `--recursive` to delete projects that still contain packages.
+
+### Delete a single subproject
+
+```sh
+obs sync delete ppg:17.9 --yes --recursive
+```
+
+### Delete a single package
+
+```sh
+obs sync delete ppg:17.9 etcd --yes
+```
+
+---
+
 ## Adding a new package
 
 ### Standalone service (Go or other)
@@ -262,7 +368,7 @@ Set `NO_COLOR=1` to disable color output.
 4. Optionally create `package.yaml` with a title and description.
 5. Sync to OBS:
    ```sh
-   obs sync my-new-service
+   obs sync push my-new-service
    ```
 
 ### PostgreSQL extension
@@ -278,7 +384,7 @@ Set `NO_COLOR=1` to disable color output.
 5. Update `rpm/*.spec` and `debian/control` — keep `@BUILD_FLAVOR@` placeholders.
 6. Sync to OBS:
    ```sh
-   obs sync ppg:17.9 my-pg-extension
+   obs sync push ppg:17.9 my-pg-extension
    ```
 
 ---

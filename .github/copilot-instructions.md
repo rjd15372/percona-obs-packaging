@@ -190,7 +190,8 @@ If the named profile file does not exist, `percona-obs` exits with an error list
 | `  + ` | green | Resource created on OBS (did not exist before) |
 | `  ~ ` | yellow | Resource updated on OBS (existed, content changed) |
 | `  = ` | dim | Resource unchanged (OBS already matches desired state) |
-| `  - ` | red | Resource deleted from OBS (orphan cleanup) |
+| `  - ` | red | Resource deleted from OBS (orphan cleanup or `sync delete`) |
+| `  @ ` | cyan | Package aggregated from a branch source (`--branch-from`) |
 | `  ! ` | yellow | Uncertain — OBS-only file skipped because services were not run (dry-run only) |
 | `  > ` | cyan | Action taken: local service run or OBS service triggered |
 | `  ✔ ` | bold green | Command completed successfully |
@@ -216,16 +217,16 @@ Use `--dirty` to skip this check (e.g. for local testing or CI pipelines that ma
 
 Every resource is always printed with its status (`+`/`~`/`=`/`-`/`!`). The `=` line is printed even when nothing changed. Use `--force` to bypass comparison and always write.
 
-### `sync [--force] [--dirty] [--dry-run] [--dry-run-remote] [--no-services] [-m MSG] [project] [package]`
+### `sync push [--force] [--dirty] [--dry-run] [--dry-run-remote] [--no-services] [--no-cache] [--non-recursive] [--project-only] [--branch-from PROFILE] [-m MSG] [project] [package]`
 
 Syncs local packaging files to OBS, creating or updating projects and packages (`obs/_service`, `obs/_multibuild`). For each target package, all ancestor projects (from root down) are created/updated first, then the package meta is applied, then `obs/` source files are synced as a **single OBS source revision** — new and changed files are uploaded, files removed locally are deleted from OBS.
 
 | Call form | Effect |
 |---|---|
-| `sync` | Sync all packages under `root/` |
-| `sync <project>` | Sync all packages under the project (recursively) |
-| `sync <top-level-package>` | Sync a single package directly under `root/` |
-| `sync <project> <package>` | Sync a single package under the project |
+| `sync push` | Sync all packages under `root/` |
+| `sync push <project>` | Sync all packages under the project (recursively) |
+| `sync push <top-level-package>` | Sync a single package directly under `root/` |
+| `sync push <project> <package>` | Sync a single package under the project |
 
 Options:
 - `--force` — bypass OBS conflict checks; always write meta and files regardless of diff.
@@ -233,9 +234,95 @@ Options:
 - `--dry-run` — make read-only OBS calls to compute what would change, but write nothing. The same `+`/`~`/`=`/`-`/`!` symbols are used. Local services are **not** run; OBS-only files (likely service outputs) are shown with `!` instead of `-`.
 - `--dry-run-remote` — run local services for real, then report what would be uploaded to OBS without writing. Use to verify manual services work before committing. All OBS writes are skipped but the `+`/`~`/`=` output reflects what would change.
 - `--no-services` — skip local service execution; upload `obs/` as-is even if `_service` declares manual services.
+- `--no-cache` — bypass both cache levels; always run obs_scm and manual services from scratch.
+- `--non-recursive` — only sync packages directly under the specified project; do not descend into sub-projects.
+- `--project-only` — only sync project configuration (meta and build config); skip all package syncing.
+- `--branch-from PROFILE` — for each package unchanged since the given profile's last sync, upload only an `_aggregate` file that reuses pre-built binaries from that profile's OBS project instead of uploading sources. Both profiles must share the same OBS instance. The aggregate message format is `branch: <profile> (<source_project>/<package>)`.
 - `-m MSG` / `--message MSG` — commit message recorded in the OBS source revision. When omitted, a message is generated automatically:
   - Normal: `sync: <branch>@<short-sha> (<remote_url>)`
   - With `--dirty`: `sync: <branch>@<short-sha> (local changes on <hostname>)`
+
+### `--branch-from` decision process
+
+When `--branch-from <profile>` is given, each package is individually evaluated: either an `_aggregate` is uploaded (reusing pre-built binaries from the branch profile's OBS project) or sources are uploaded normally. The decision is made by `_resolve_branch_decision`.
+
+#### Branch project derivation
+
+The corresponding branch OBS project is derived by substituting the current `rootprj` prefix with the branch profile's `rootprj`. For example, if the current project is `home:Admin:percona-test:ppg:17.9` and the branch rootprj is `home:Admin:percona`, the branch project is `home:Admin:percona:ppg:17.9`.
+
+#### Primary path — git SHA comparison
+
+1. Fetch the latest source revision comment from the branch OBS project for this package (`GET /source/<branch_project>/<package>/_history`).
+2. Match it against the sync message pattern `sync: <branch>@<sha> (<detail>)`.
+3. If the message matches and the detail does **not** start with `"local changes on"` (i.e. was a clean sync):
+   - Call `git log` to check whether any commits touching `<package_path>` exist since `<sha>`.
+   - **No commits** → aggregate (package unchanged). **Commits exist** → upload sources.
+
+#### Fallback — content check
+
+The content check is used when the revision comment cannot be trusted:
+- No comment on the branch (new project, never synced)
+- Comment doesn't match the `sync:` format (e.g. manual commit, older format)
+- Sync message says `"local changes on <hostname>"` (was synced with `--dirty`)
+
+Content check (`_content_matches_branch`) performs two sub-checks:
+
+**Sub-check 1 — File MD5 comparison**
+
+Fetch the expanded file list from OBS (`GET /source/<branch_project>/<package>?expand=1`). The `expand=1` parameter is required to see service-generated files (e.g. `_service:obs_scm:*.obsinfo`, `.obscpio`) that OBS stores server-side. For every file in the local `obs/` directory, compare its MD5 against the OBS-returned MD5. If any file differs or is missing from OBS, the check fails (→ upload sources).
+
+**Sub-check 2 — Upstream obs_scm commit hash**
+
+If a `_service` file exists, extract the *upstream* `obs_scm` service — the one that fetches the actual software source. Packaging `obs_scm` services (whose `subdir` param matches `root/.+/(debian|rpm)$`) are excluded. If exactly one upstream `obs_scm` remains:
+
+1. Resolve the remote HEAD SHA using `git ls-remote --` (30 s timeout), trying `refs/heads/<revision>`, then `refs/tags/<revision>^{}` (annotated tag), then `refs/tags/<revision>`.
+2. If resolution fails, treat the package as **changed** (conservative: cannot verify).
+3. Find the obsinfo file on OBS by looking for a name that starts with `<filename_prefix>` or `_service:obs_scm:<filename_prefix>` and ends with `.obsinfo`. OBS stores server-side service outputs with a `_service:<name>:` prefix; both forms are checked.
+4. Fetch the obsinfo content with `?expand=1` and parse the `commit:` line.
+5. If `obs_commit != remote_head_sha` → **changed** (upstream has moved). If equal → **unchanged**.
+
+If zero or more than one upstream `obs_scm` services are found, sub-check 2 is skipped and the MD5 match alone is sufficient.
+
+#### Plain `sync push` with a `branch:` aggregate already on OBS
+
+When running `sync push` *without* `--branch-from` (i.e. a full source sync), but the package on OBS already holds a `branch:` aggregate from a previous `--branch-from` run, uploading sources would overwrite the aggregate unnecessarily. To detect this:
+
+1. Fetch the latest revision comment.
+2. If it matches `branch: <profile> (<source_project>/<package>)`, extract `<source_project>`.
+3. Run the content check (`_content_matches_branch`) against that source project.
+4. If the content matches → print `= files ...` and skip the upload. If not → proceed with the normal source upload.
+
+#### Multibuild packages
+
+For packages with an `obs/_multibuild` file, the `_aggregate` XML must list every flavored OBS package name separately. `_multibuild_packages(obs_dir, base_name)` reads the `<flavor>` elements and checks the `buildemptyflavor` attribute (default: true). When `buildemptyflavor` is absent or `"true"`, the bare package name is included in addition to `<base_name>:<flavor>` entries. The `_aggregate` output format is:
+
+```xml
+<aggregatelist>
+  <aggregate project="<branch_project>">
+    <package>percona-pg-telemetry:17</package>
+    <!-- <package>percona-pg-telemetry</package>  only if buildemptyflavor != false -->
+  </aggregate>
+</aggregatelist>
+```
+
+The revision message recorded for the aggregate commit is `branch: <profile> (<branch_project>/<package>)`.
+
+### `sync delete [--yes] [--recursive] [--dry-run] [project] [package]`
+
+Deletes OBS projects (and their sub-projects) or a single package created by `sync push`.
+
+| Call form | Effect |
+|---|---|
+| `sync delete` | Delete the full project tree under rootprj (deepest sub-projects first) |
+| `sync delete <project>` | Delete a project and all its sub-projects |
+| `sync delete <project> <package>` | Delete a single package |
+
+Options:
+- `--yes` / `-y` — skip the confirmation prompt.
+- `--recursive` — delete projects that still contain packages (passes OBS `recursive` flag). Without this flag, a project with packages will fail with a hint to add `--recursive`.
+- `--dry-run` — show what would be deleted without making any changes.
+
+Projects that do not exist on OBS are silently skipped. Projects are always deleted with `force=True` to bypass inter-project repository dependency checks when removing a whole tree.
 
 ### Local service execution
 
@@ -292,7 +379,7 @@ Triggers an OBS service run (`runservice`) for one or more packages, causing OBS
 
 ### `build status [project] [package]`
 
-Prints a color-coded tree of live build statuses fetched from OBS.
+Prints a color-coded tree of live build statuses fetched from OBS. For each repository where a package has `succeeded`, the built version (e.g. `3.5.26-6.1`) is shown after the status symbol, parsed from the binary package filename.
 
 | Call form | Effect |
 |---|---|
@@ -505,4 +592,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` (commands: `sync`, `build trigger`, `build status`, `profile create`, `profile list`) |
+| Management script | `percona-obs` (commands: `sync push`, `sync delete`, `build trigger`, `build status`, `profile create`, `profile list`, `project verify`) |
