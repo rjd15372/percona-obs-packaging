@@ -15,10 +15,14 @@ from .common import (
     _build_aggregate_xml,
     _print_aggregate,
     _print_ok,
+    _print_remove,
     _print_same,
     _print_update,
+    find_projects,
+    is_package,
     load_yaml,
     logger,
+    resolve_project_path,
 )
 from .git_utils import (
     _check_git_clean,
@@ -508,3 +512,75 @@ def cmd_sync(args):
     else:
         suffix = ""
     _print_ok(f"sync successful{suffix}")
+
+
+def cmd_sync_delete(args) -> None:
+    """Delete OBS projects (and sub-projects) or a single package.
+
+    Supported call forms:
+      sync delete                         — delete full project tree under rootprj
+      sync delete <project>               — delete a project and all its sub-projects
+      sync delete <project> <package>     — delete a single package
+    """
+    apiurl = osc.conf.config["apiurl"]
+    dry_run: bool = args.dry_run
+
+    if args.package:
+        # ── Single package ────────────────────────────────────────────────
+        proj_path = resolve_project_path(args.project)
+        project_config = load_yaml(proj_path / "project.yaml")
+        obs_project_name = (
+            project_config.get("name") or f"{args.rootprj}:{args.project}"
+        )
+        label = f"{obs_project_name}/{args.package}"
+        if dry_run:
+            _print_remove(f"package  {label}")
+            _print_ok("delete done (dry run)")
+            return
+        print(f"  {label}")
+        if not args.yes:
+            try:
+                answer = input("\nDelete 1 package? [y/N] ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                raise SystemExit("\nAborted.")
+            if answer not in ("y", "yes"):
+                raise SystemExit("Aborted.")
+        _delete_obs_package(apiurl, obs_project_name, args.package, dry_run=False)
+    else:
+        # ── Project tree ──────────────────────────────────────────────────
+        if args.project:
+            root_path = resolve_project_path(args.project)
+            if not root_path.is_dir() or is_package(root_path):
+                raise SystemExit(f"error: {args.project!r} is not a project directory")
+            root_obs = f"{args.rootprj}:{args.project}"
+        else:
+            root_path = REPO_ROOT
+            root_obs = args.rootprj
+
+        projects = list(find_projects(root_path, root_obs))
+        # Delete deepest sub-projects first so parents are empty before deletion.
+        projects_sorted = sorted(projects, key=lambda x: x[0].count(":"), reverse=True)
+
+        if dry_run:
+            for obs_name, _ in projects_sorted:
+                _print_remove(f"project  {obs_name}")
+            _print_ok("delete done (dry run)")
+            return
+
+        for obs_name, _ in projects_sorted:
+            print(f"  {obs_name}")
+        n = len(projects_sorted)
+        kind = "project" if n == 1 else "projects"
+        if not args.yes:
+            try:
+                answer = input(f"\nDelete {n} {kind}? [y/N] ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                raise SystemExit("\nAborted.")
+            if answer not in ("y", "yes"):
+                raise SystemExit("Aborted.")
+        for obs_name, _ in projects_sorted:
+            _delete_obs_project(
+                apiurl, obs_name, dry_run=False, recursive=args.recursive
+            )
+
+    _print_ok("delete done")

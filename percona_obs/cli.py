@@ -8,7 +8,7 @@ import urllib3.exceptions
 from .cmd_build import cmd_build_status, cmd_build_trigger
 from .cmd_profile import _load_profile, cmd_profile_create, cmd_profile_list
 from .cmd_project import cmd_project_verify
-from .cmd_sync import cmd_sync
+from .cmd_sync import cmd_sync, cmd_sync_delete
 from .common import _DIM, _col, logger
 
 
@@ -48,79 +48,88 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser(
         "sync",
+        help="Sync local packaging files to OBS, or delete synced projects/packages.",
+    )
+    sync_subparsers = sync_parser.add_subparsers(
+        dest="sync_command", metavar="<subcommand>"
+    )
+    sync_subparsers.required = True
+
+    sync_push_parser = sync_subparsers.add_parser(
+        "push",
         help="Sync local packaging files to OBS, creating or updating projects and packages.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "project",
         nargs="?",
         default=None,
         help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
         "If omitted, all packages and projects under root/ are synced.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "package",
         nargs="?",
         default=None,
         help="Package name to sync. If omitted, all packages and subprojects under the project are synced.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--force",
         action="store_true",
         default=False,
         help="Force update even if OBS reports a conflict.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--dirty",
         action="store_true",
         default=False,
         help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "-m",
         "--message",
         default="",
         metavar="MSG",
         help="Commit message recorded in the OBS source revision when files are uploaded.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
         help="Simulate actions without writing anything to OBS.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--dry-run-remote",
         action="store_true",
         default=False,
         help="Run local services but skip all OBS write calls. Use to verify services work without committing to OBS.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--no-services",
         action="store_true",
         default=False,
         help="Skip running local OBS services (mode=manual). Upload obs/ files as-is.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--no-cache",
         action="store_true",
         default=False,
         help="Disable the service artifact cache; always run manual services (e.g. go_modules).",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--non-recursive",
         action="store_true",
         default=False,
         dest="non_recursive",
         help="Only sync packages directly under the specified project; do not descend into subprojects.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--project-only",
         action="store_true",
         default=False,
         dest="project_only",
         help="Only sync project configuration (meta and build config); skip all package syncing.",
     )
-    sync_parser.add_argument(
+    sync_push_parser.add_argument(
         "--branch-from",
         metavar="PROFILE",
         default=None,
@@ -129,7 +138,45 @@ def build_parser() -> argparse.ArgumentParser:
         "_aggregate that reuses pre-built binaries from that profile's OBS project "
         "instead of uploading sources. Both profiles must share the same OBS instance.",
     )
-    sync_parser.set_defaults(func=cmd_sync)
+    sync_push_parser.set_defaults(func=cmd_sync)
+
+    sync_delete_parser = sync_subparsers.add_parser(
+        "delete",
+        help="Delete OBS projects (and sub-projects) or a single package.",
+    )
+    sync_delete_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Project name (colon notation, e.g. ppg:17.9). "
+        "If omitted, the full project tree under rootprj is deleted.",
+    )
+    sync_delete_parser.add_argument(
+        "package",
+        nargs="?",
+        default=None,
+        help="Package name. If provided, only this package is deleted (project is required).",
+    )
+    sync_delete_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Skip the confirmation prompt.",
+    )
+    sync_delete_parser.add_argument(
+        "--recursive",
+        action="store_true",
+        default=False,
+        help="Delete projects even if they still contain packages.",
+    )
+    sync_delete_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be deleted without making any changes.",
+    )
+    sync_delete_parser.set_defaults(func=cmd_sync_delete)
 
     build_parser_ = subparsers.add_parser(
         "build",

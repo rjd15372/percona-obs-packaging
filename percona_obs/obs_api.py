@@ -6,6 +6,7 @@ from pathlib import Path
 import osc.conf
 import osc.connection
 import osc.core
+import osc.oscerr
 
 from .common import (
     _YELLOW,
@@ -186,20 +187,31 @@ def _delete_obs_package(
     _print_remove(label)
 
 
-def _delete_obs_project(apiurl: str, obs_project_name: str, dry_run: bool) -> None:
-    """Delete all packages in an OBS project then delete the project itself.
+def _delete_obs_project(
+    apiurl: str, obs_project_name: str, dry_run: bool, recursive: bool = False
+) -> None:
+    """Delete an OBS project (OBS automatically removes all packages within it).
 
+    When recursive=True, passes the recursive flag to OBS so that projects
+    containing packages are deleted without first emptying them.
     In dry-run mode, reports what would be deleted without making any changes.
     """
-    for pkg in sorted(_fetch_obs_package_names(apiurl, obs_project_name)):
-        _delete_obs_package(apiurl, obs_project_name, pkg, dry_run)
-    label = f"project meta  {obs_project_name}"
     if not dry_run:
         try:
-            osc.core.delete_project(apiurl, obs_project_name)
+            osc.core.delete_project(
+                apiurl, obs_project_name, force=True, recursive=recursive
+            )
+        except osc.oscerr.ProjectError as e:
+            raise SystemExit(
+                f"error deleting project {obs_project_name}:\n  {e}\n"
+                "  hint: use --recursive to delete projects that still contain packages"
+            ) from None
         except urllib.error.HTTPError as e:
+            if e.code == 404:
+                logger.debug(f"project not found, skipping: {obs_project_name}")
+                return
             _obs_api_error(e, f"deleting project {obs_project_name}")
-    _print_remove(label)
+    _print_remove(f"project  {obs_project_name}")
 
 
 def _child_text(elem: ET.Element, tag: str) -> str:
