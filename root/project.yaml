@@ -2,24 +2,30 @@ title: Percona OBS Packaging
 description: "OBS RPM and DEB packaging for Percona products."
 repositories:
   - name: RockyLinux_9
-    path:
-      project: openSUSE.org:RockyLinux:9
-      repository: standard
+    paths:
+      - project: openSUSE.org:RockyLinux:9
+        repository: standard
+      - subproject: builddep
+        repository: RockyLinux_9
     archs: [x86_64]
   - name: Debian_13
-    path:
-      project: openSUSE.org:Debian:13
-      repository: standard
+    paths:
+      - project: openSUSE.org:Debian:13
+        repository: standard
+      - subproject: builddep
+        repository: Debian_13
     archs: [x86_64]
   - name: xUbuntu_24.04
-    path:
-      project: openSUSE.org:Ubuntu:24.04
-      repository: universe
+    paths:
+      - project: openSUSE.org:Ubuntu:24.04
+        repository: universe
+      - subproject: builddep
+        repository: xUbuntu_24.04
     archs: [x86_64]
 project-config: |
   %if "%_repository" == "RockyLinux_8" || "%_repository" == "RHEL-8"  || "%_repository" == "RedHat_RHEL-8"
   ExpandFlags: module:llvm-toolset-rhel8
-  # so that we get perl-IO-Socket-SSL 
+  # so that we get perl-IO-Socket-SSL
   ExpandFlags: module:perl-5.26
   ExpandFlags: module:perl-IO-Socket-SSL-2.066
   ExpandFlags: module:python36-3.6
@@ -29,4 +35,5 @@ project-config: |
   %if "%_repository" == "RockyLinux_9"
   ExpandFlags: module:llvm-toolset-rhel9
   %endif
+
 

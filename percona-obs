@@ -150,12 +150,17 @@ def build_project_meta(
         repo_elem = ET.SubElement(root, "repository", name=repo["name"])
         for ancestor in ancestors:
             ET.SubElement(repo_elem, "path", project=ancestor, repository=repo["name"])
-        path_info = repo.get("path", {})
-        if path_info:
+        # Each entry may use 'project:' for an absolute OBS project name, or
+        # 'subproject:' for a name relative to rootprj (e.g. 'builddep' → '<rootprj>:builddep').
+        for path_info in repo.get("paths", []):
+            if "subproject" in path_info:
+                proj = f"{rootprj}:{path_info['subproject']}"
+            else:
+                proj = path_info["project"]
             ET.SubElement(
                 repo_elem,
                 "path",
-                project=path_info["project"],
+                project=proj,
                 repository=path_info["repository"],
             )
         for arch in repo.get("archs", []):
