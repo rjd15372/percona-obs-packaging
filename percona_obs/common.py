@@ -218,11 +218,17 @@ def build_package_meta(
     return ET.tostring(root, encoding="unicode")
 
 
-def _build_aggregate_xml(source_project: str, package_name: str) -> str:
-    """Build an OBS _aggregate XML that pulls binaries from source_project/package_name."""
+def _build_aggregate_xml(source_project: str, packages: list[str]) -> str:
+    """Build an OBS _aggregate XML that pulls binaries from source_project.
+
+    packages is the list of OBS package names to aggregate; for plain packages
+    this is [package_name], for multibuild it includes flavored entries
+    (e.g. ['percona-pg-telemetry:17']) and optionally the bare name.
+    """
     root = ET.Element("aggregatelist")
     agg = ET.SubElement(root, "aggregate", project=source_project)
-    ET.SubElement(agg, "package").text = package_name
+    for pkg in packages:
+        ET.SubElement(agg, "package").text = pkg
     ET.indent(root)
     return ET.tostring(root, encoding="unicode")
 

@@ -52,6 +52,30 @@ _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
 _BRANCH_MSG_RE = re.compile(r"^branch: \S+ \((.+)/[^/]+\)$")
 
 
+def _multibuild_packages(obs_dir: Path, base_name: str) -> list[str]:
+    """Return the OBS package names to use in an _aggregate for base_name.
+
+    For plain packages: [base_name].
+    For multibuild packages: ["{base_name}:{flavor}", ...] plus the bare
+    base_name if buildemptyflavor is absent or not "false".
+    """
+    multibuild_file = obs_dir / "_multibuild"
+    if not multibuild_file.is_file():
+        return [base_name]
+    try:
+        root = ET.parse(multibuild_file).getroot()
+    except ET.ParseError:
+        return [base_name]
+    flavors = [el.text.strip() for el in root.findall("flavor") if el.text]
+    if not flavors:
+        return [base_name]
+    include_empty = root.get("buildemptyflavor", "true").lower() != "false"
+    packages = [f"{base_name}:{flavor}" for flavor in flavors]
+    if include_empty:
+        packages.append(base_name)
+    return packages
+
+
 def _content_matches_branch(
     apiurl: str, branch_project: str, package_name: str, obs_dir: Path
 ) -> bool:
@@ -354,7 +378,8 @@ def cmd_sync(args):
                     f"branch: {args.branch_from} "
                     f"({branch_project}/{package_path.name})"
                 )
-                agg_xml = _build_aggregate_xml(branch_project, package_path.name)
+                pkg_names = _multibuild_packages(obs_dir, package_path.name)
+                agg_xml = _build_aggregate_xml(branch_project, pkg_names)
                 agg_dir = Path(tempfile.mkdtemp(prefix="percona-obs-agg-"))
                 try:
                     (agg_dir / "_aggregate").write_text(agg_xml, encoding="utf-8")
@@ -368,10 +393,11 @@ def cmd_sync(args):
                     )
                 finally:
                     shutil.rmtree(agg_dir, ignore_errors=True)
-                _print_aggregate(
-                    f"{obs_project_name}/{package_path.name}"
-                    f"  → {branch_project}/{package_path.name}"
-                )
+                for pkg_name in pkg_names:
+                    _print_aggregate(
+                        f"{obs_project_name}/{pkg_name}"
+                        f"  → {branch_project}/{pkg_name}"
+                    )
             else:
                 # When not using --branch-from, the target OBS package may
                 # still hold a _aggregate from a prior --branch-from sync.

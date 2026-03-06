@@ -61,14 +61,18 @@ def _status_indicator(code: str) -> str:
 
 def _fetch_build_results(
     apiurl: str, obs_project_name: str
-) -> dict[str, dict[str, dict[str, str]]]:
+) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, dict[str, str]]]:
     """Fetch build results for all packages in an OBS project.
 
-    Returns {base_package: {repository: {flavor: status_code}}} where:
-      - base_package  -- package name without any ':flavor' multibuild suffix
-      - repository    -- OBS repository name (e.g. 'RockyLinux_9')
-      - flavor        -- multibuild flavor string; '' for non-multibuild packages
-      - status_code   -- e.g. 'succeeded', 'failed', 'building'
+    Returns (results, succeeded_archs) where:
+      results: {base_package: {repository: {flavor: status_code}}}
+        - base_package  -- package name without any ':flavor' multibuild suffix
+        - repository    -- OBS repository name (e.g. 'RockyLinux_9')
+        - flavor        -- multibuild flavor string; '' for non-multibuild packages
+        - status_code   -- e.g. 'succeeded', 'failed', 'building'
+      succeeded_archs: {base_package: {repository: arch}}
+        One representative arch per (package, repository) that has succeeded,
+        used to query build history for version information.
 
     When the same (package, repository, flavor) has results for multiple
     architectures, the highest-priority (most actionable) status is kept.
@@ -77,18 +81,20 @@ def _fetch_build_results(
     carries only 'excluded' or 'disabled' and flavored entries are present —
     it is OBS scaffolding that adds no useful information.
 
-    Returns {} on any error.
+    Returns ({}, {}) on any error.
     """
     url = osc.core.makeurl(apiurl, ["build", obs_project_name, "_result"])
     try:
         response = osc.connection.http_GET(url)
         result_root = ET.fromstring(response.read())
     except Exception:
-        return {}
+        return {}, {}
 
     results: dict[str, dict[str, dict[str, str]]] = {}
+    succeeded_archs: dict[str, dict[str, str]] = {}
     for result_elem in result_root.findall("result"):
         repo = result_elem.get("repository", "")
+        arch = result_elem.get("arch", "")
         for status_elem in result_elem.findall("status"):
             full_pkg = status_elem.get("package", "")
             code = status_elem.get("code", "unknown")
@@ -100,6 +106,8 @@ def _fetch_build_results(
                 < _STATUS_PRIORITY.get(repo_map[flavor], 99)
             ):
                 repo_map[flavor] = code
+            if code == "succeeded":
+                succeeded_archs.setdefault(base_pkg, {}).setdefault(repo, arch)
 
     for pkg_repos in results.values():
         for flavor_map in pkg_repos.values():
@@ -107,10 +115,52 @@ def _fetch_build_results(
                 if flavor_map.get("") in ("excluded", "disabled"):
                     del flavor_map[""]
 
-    return results
+    return results, succeeded_archs
 
 
-def _print_pkg_repos(repo_results: dict[str, dict[str, str]], prefix: str) -> None:
+def _version_from_binary(filename: str) -> str | None:
+    """Extract version-release from a binary package filename.
+
+    Supports RPM (name-version-release.arch.rpm) and
+    DEB (name_version_arch.deb) naming conventions.
+    """
+    if filename.endswith(".rpm") and not filename.endswith(".src.rpm"):
+        # name-version-release.arch.rpm → strip arch.rpm, split off last two -
+        base = filename.rsplit(".", 2)  # ['name-ver-rel', 'arch', 'rpm']
+        if len(base) == 3:
+            chunks = base[0].rsplit("-", 2)
+            if len(chunks) == 3:
+                return f"{chunks[1]}-{chunks[2]}"
+    elif filename.endswith(".deb"):
+        # name_version_arch.deb
+        parts = filename[:-4].split("_", 2)
+        if len(parts) >= 2:
+            return parts[1]
+    return None
+
+
+def _fetch_pkg_versrel(
+    apiurl: str, obs_project: str, repo: str, arch: str, pkg: str
+) -> str | None:
+    """Return the version-release (e.g. '3.5.26-6.1') by inspecting the binary list."""
+    url = osc.core.makeurl(apiurl, ["build", obs_project, repo, arch, pkg])
+    try:
+        response = osc.connection.http_GET(url)
+        root = ET.fromstring(response.read())
+        for binary in root.findall("binary"):
+            ver = _version_from_binary(binary.get("filename", ""))
+            if ver:
+                return ver
+    except Exception:
+        pass
+    return None
+
+
+def _print_pkg_repos(
+    repo_results: dict[str, dict[str, str]],
+    prefix: str,
+    versions: dict[str, str] | None = None,
+) -> None:
     """Print per-repo (and per-flavor) build status lines for a single package."""
     repos = sorted(repo_results)
     if not repos:
@@ -122,20 +172,21 @@ def _print_pkg_repos(repo_results: dict[str, dict[str, str]], prefix: str) -> No
         flavor_map = repo_results[repo]
         all_flavors = sorted(flavor_map.items())
         unique_codes = {c for _, c in all_flavors}
+        ver = f"  {_col(_DIM, versions[repo])}" if versions and repo in versions else ""
         if len(unique_codes) == 1:
             code = next(iter(unique_codes))
             tag = ""
             if all_flavors and all_flavors[0][0]:
                 tags = " ".join(f"[:{f}]" for f, _ in all_flavors)
                 tag = f"  {_col(_DIM, tags)}"
-            print(f"{prefix}{repo_conn}{repo:<22} {_status_indicator(code)}{tag}")
+            print(f"{prefix}{repo_conn}{repo:<22} {_status_indicator(code)}{tag}{ver}")
         else:
             # Flavors have different statuses — expand each as its own sub-line.
             print(f"{prefix}{repo_conn}{repo}")
             sub = prefix + ("    " if repo_is_last else "│   ")
             for k, (flavor, code) in enumerate(all_flavors):
                 flav_conn = "└── " if k == len(all_flavors) - 1 else "├── "
-                print(f"{sub}{flav_conn}:{flavor:<14} {_status_indicator(code)}")
+                print(f"{sub}{flav_conn}:{flavor:<14} {_status_indicator(code)}{ver}")
 
 
 def _print_project_tree(
@@ -143,6 +194,7 @@ def _print_project_tree(
     obs_project: str,
     target_set: set[tuple[str, str]],
     all_results: dict[str, dict[str, dict[str, dict[str, str]]]],
+    all_versions: dict[str, dict[str, dict[str, str]]],
     prefix: str,
     is_last: bool,
     is_root: bool = False,
@@ -183,14 +235,21 @@ def _print_project_tree(
         if kind == "project":
             child_raw = f"{obs_project}:{child.name}"
             _print_project_tree(
-                child, child_raw, target_set, all_results, child_prefix, child_is_last
+                child,
+                child_raw,
+                target_set,
+                all_results,
+                all_versions,
+                child_prefix,
+                child_is_last,
             )
         else:
             pkg_name = child.name
             pkg_conn = "└── " if child_is_last else "├── "
             print(f"{child_prefix}{pkg_conn}{pkg_name}")
             repo_results = all_results.get(obs_name, {}).get(pkg_name, {})
-            _print_pkg_repos(repo_results, pkg_prefix)
+            pkg_versions = all_versions.get(obs_name, {}).get(pkg_name)
+            _print_pkg_repos(repo_results, pkg_prefix, pkg_versions)
 
 
 def cmd_build_trigger(args):
@@ -240,9 +299,23 @@ def cmd_build_status(args):
 
     # Fetch build results per OBS project.
     all_results: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
+    all_succeeded_archs: dict[str, dict[str, dict[str, str]]] = {}
     for obs_name in unique_obs_projects:
         logger.debug(f"fetching build results: {obs_name}")
-        all_results[obs_name] = _fetch_build_results(apiurl, obs_name)
+        results, succeeded_archs = _fetch_build_results(apiurl, obs_name)
+        all_results[obs_name] = results
+        all_succeeded_archs[obs_name] = succeeded_archs
+
+    # Fetch versrel for each succeeded (package, repository).
+    all_versions: dict[str, dict[str, dict[str, str]]] = {}
+    for obs_name, pkg_archs in all_succeeded_archs.items():
+        for pkg, repo_archs in pkg_archs.items():
+            for repo, arch in repo_archs.items():
+                versrel = _fetch_pkg_versrel(apiurl, obs_name, repo, arch, pkg)
+                if versrel:
+                    all_versions.setdefault(obs_name, {}).setdefault(pkg, {})[
+                        repo
+                    ] = versrel
 
     # Determine the tree root: use the specified project subtree when given,
     # otherwise show the full tree from the root project.
@@ -259,5 +332,12 @@ def cmd_build_status(args):
         root_raw = args.rootprj
 
     _print_project_tree(
-        root_path, root_raw, target_set, all_results, "", False, is_root=True
+        root_path,
+        root_raw,
+        target_set,
+        all_results,
+        all_versions,
+        "",
+        False,
+        is_root=True,
     )
