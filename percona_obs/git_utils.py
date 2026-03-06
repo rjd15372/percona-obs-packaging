@@ -1,0 +1,81 @@
+import socket
+import subprocess
+import sys
+
+from .common import _REPO_DIR
+
+
+def _check_git_clean() -> None:
+    """Abort if the working tree has uncommitted changes or HEAD is not pushed to any remote."""
+    # Uncommitted changes (staged or unstaged, including untracked)
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_DIR,
+    )
+    if result.returncode != 0:
+        print(f"error: git status failed: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    if result.stdout.strip():
+        print(
+            "error: there are uncommitted changes in the repository.", file=sys.stderr
+        )
+        print(
+            "       Commit or stash all changes before running this command.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # HEAD pushed to at least one remote
+    result = subprocess.run(
+        ["git", "branch", "-r", "--contains", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_DIR,
+    )
+    if result.returncode != 0:
+        print(f"error: git failed: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    if not result.stdout.strip():
+        print("error: HEAD commit has not been pushed to any remote.", file=sys.stderr)
+        print("       Push your branch before running this command.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _generate_sync_message(dirty: bool) -> str:
+    """Build the default OBS commit message from the current git state.
+
+    Normal:  sync: <branch>@<short-sha> (<remote_url>)
+    Dirty:   sync: <branch>@<short-sha> (local changes on <hostname>)
+    """
+
+    def _git(*args: str) -> str:
+        r = subprocess.run(
+            ["git"] + list(args), capture_output=True, text=True, cwd=_REPO_DIR
+        )
+        return r.stdout.strip() if r.returncode == 0 else "unknown"
+
+    short_sha = _git("rev-parse", "--short", "HEAD")
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+
+    if dirty:
+        hostname = socket.gethostname()
+        return f"sync: {branch}@{short_sha} (local changes on {hostname})"
+
+    # Discover which remote contains HEAD rather than assuming "origin".
+    # `git branch -r --contains HEAD` returns lines like "  origin/main", "  upstream/main".
+    # Pick the first remote name found; fall back to "unknown" if none.
+    remote_name = "unknown"
+    for line in _git("branch", "-r", "--contains", "HEAD").splitlines():
+        token = line.strip().split("/")[0]
+        if token:
+            remote_name = token
+            break
+    remote_url = (
+        _git("remote", "get-url", remote_name)
+        if remote_name != "unknown"
+        else "unknown"
+    )
+
+    return f"sync: {branch}@{short_sha} ({remote_url})"
