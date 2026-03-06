@@ -116,10 +116,12 @@ def _topo_sort_projects(
                     )
                     if dep_key and dep_key != raw_proj:
                         deps[raw_proj].add(dep_key)
-    # Kahn's topological sort; depth (-colon count) is the secondary tie-breaker
+    # Kahn's topological sort; colon count (ascending) is the secondary tie-breaker
+    # so shallower/parent projects are created before their children within the
+    # same dependency tier — OBS requires parent projects to exist first.
     in_degree = {p: len(deps[p]) for p in local_keys}
     ready = sorted(
-        [p for p, d in in_degree.items() if d == 0], key=lambda x: -x.count(":")
+        [p for p, d in in_degree.items() if d == 0], key=lambda x: x.count(":")
     )
     result: list[str] = []
     while ready:
@@ -130,9 +132,9 @@ def _topo_sort_projects(
                 in_degree[other] -= 1
                 if in_degree[other] == 0:
                     ready.append(other)
-                    ready.sort(key=lambda x: -x.count(":"))
+                    ready.sort(key=lambda x: x.count(":"))
     # Append any remaining nodes (cycle guard — should not happen in practice)
     result.extend(
-        sorted((p for p in local_keys if in_degree[p] > 0), key=lambda x: -x.count(":"))
+        sorted((p for p in local_keys if in_degree[p] > 0), key=lambda x: x.count(":"))
     )
     return result

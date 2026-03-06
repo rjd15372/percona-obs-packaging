@@ -1,6 +1,7 @@
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 from .common import _REPO_DIR
 
@@ -41,6 +42,26 @@ def _check_git_clean() -> None:
         print("error: HEAD commit has not been pushed to any remote.", file=sys.stderr)
         print("       Push your branch before running this command.", file=sys.stderr)
         sys.exit(1)
+
+
+def _has_package_changes_since(short_sha: str, package_path: Path) -> bool:
+    """Return True if the package directory has any git commits since short_sha.
+
+    Checks the entire package directory (obs/, debian/, rpm/, package.yaml, etc.)
+    so that changes to any packaging file also trigger a full sync.
+
+    Returns True (treat as changed) if the SHA is unknown, git fails, or any
+    commits are found. Returns False only when no commits touch the directory.
+    """
+    result = subprocess.run(
+        ["git", "log", f"{short_sha}..HEAD", "--", str(package_path)],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_DIR,
+    )
+    if result.returncode != 0:
+        return True  # unknown SHA or git error — safe default: sync normally
+    return bool(result.stdout.strip())
 
 
 def _generate_sync_message(dirty: bool) -> str:

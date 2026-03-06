@@ -408,6 +408,77 @@ Omit `package.yaml` entirely if both `<title>` and `<description>` are empty.
 - Do not run `black` or `pyright` — no Python code is modified.
 - After creating the files, verify with `find root/<package_name> -type f | sort`.
 
+## OBS Package Branching Mechanisms
+
+Source code reference: `/home/rdias/Work/open-build-service/` — key files: `src/api/app/models/branch_package.rb`, `src/api/app/controllers/source_package_command_controller.rb`, `src/backend/BSSrcServer/Link.pm`, `src/backend/BSSched/BuildJob/Aggregate.pm`.
+
+| Mechanism | Creates `_link`? | Independent? | Follows devel chain? | Use case |
+|---|---|---|---|---|
+| `_link` file | yes (manually) | no | no | overlay/patch tracking |
+| `cmd=branch` | yes (auto) | no | yes | developer workflow |
+| `cmd=fork` | no (scmsync) | yes (git) | yes | SCM-based development |
+| `cmd=copy` | no | yes | no | release, snapshot |
+| `cmd=linktobranch` | transforms | partially | no | patch a linked package |
+| `_aggregate` | no | n/a | no | binary reuse across projects |
+
+### 1. `_link` — Source Link (core primitive)
+
+A `_link` XML file inside a package makes it inherit sources from another package. The backend (`BSSrcServer/Link.pm`) resolves the link chain at build time — it fetches the origin's files, applies any local overlays, and presents the merged filelist to the build system. Links can chain. `rev`/`srcmd5` can pin a specific revision.
+
+```xml
+<link project="BaseProject" package="mypackage" rev="abc123"/>
+```
+
+### 2. `cmd=branch` — Package Branch
+
+`POST /source/<project>/<package>?cmd=branch&target_project=<tgt>`
+
+The main "developer branch" operation (`BranchPackage` in `branch_package.rb`):
+1. Creates a branch project (e.g. `home:user:branches:BaseProject`)
+2. Creates a package in it with a `_link` pointing back to the source
+3. Optionally follows the **devel project** chain (`devel:` pointer on the package)
+4. Optionally follows the **update project** chain (`OBS:UpdateProject` attribute)
+5. Copies repositories from the source project
+
+Resolution order:
+```
+1) BaseProject  ←  2) UpdateProject  ←  3) DevelProject/Package
+                                          X) BranchProject  ← branch targets here
+```
+
+Key parameters: `maintenance=1`, `newinstance=1` (copy instead of link), `ignoredevel=1`, `missingok=1`, `dryrun=1`.
+
+### 3. `cmd=fork` — SCM-synced Fork
+
+`POST /source/<project>/<package>?cmd=fork&scmsync=<url>`
+
+Variant of `branch` for `scmsync` (Git-managed) packages. Creates a new package with its own `scmsync` URL pointing to a forked repo. Same `BranchPackage` code path but skips all source link operations.
+
+### 4. `cmd=copy` — Full Source Copy
+
+`POST /source/<project>/<package>?cmd=copy&oproject=<src>&opackage=<src_pkg>`
+
+A complete, independent copy of source files — no `_link`. The new package is fully independent of the origin. Used for releases, snapshots, and starting a new independent package from an existing one. Key options: `keeplink=1`, `expand=1`, `repairlink=1`, `withvrev=1`.
+
+### 5. `cmd=linktobranch` — Convert Link to Branch
+
+`POST /source/<project>/<package>?cmd=linktobranch`
+
+Converts an existing `_link` package into a proper branch (expands the link, stores real files, keeps the link with a baserev). Useful when you need to make actual changes to a linked package.
+
+### 6. `_aggregate` — Binary Aggregation
+
+A special package type (`_aggregate` XML file) that pulls **built binaries** (not sources) from another project's repository into the current one. Handled by `BSSched/BuildJob/Aggregate.pm`. No source link involved — the binaries are made available as if they were built locally.
+
+### `osc` Python API
+
+```python
+import osc.core
+osc.core.branch_pkg(apiurl, src_project, src_package, ...)   # cmd=branch
+osc.core.copy_pac(src_apiurl, src_project, src_package, ...)  # cmd=copy
+osc.core.link_to_branch(apiurl, project, package)             # cmd=linktobranch
+```
+
 ## Direct OBS CLI (osc)
 ```sh
 # Check out a package from OBS

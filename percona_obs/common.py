@@ -88,6 +88,11 @@ def _print_remove(text: str) -> None:
     print(f"{_erase()}  {_col(_RED, '-')} {text}")
 
 
+def _print_aggregate(text: str) -> None:
+    """Print a '  @ ...' line for a package being aggregated from a branch source."""
+    print(f"{_erase()}  {_col(_CYAN, '@')} {text}")
+
+
 def _silence_stdout() -> contextlib.AbstractContextManager:
     """Context manager that swallows any stdout written inside the block.
 
@@ -209,6 +214,15 @@ def build_package_meta(
     root = ET.Element("package", name=package_name, project=obs_project_name)
     ET.SubElement(root, "title").text = title
     ET.SubElement(root, "description").text = description
+    ET.indent(root)
+    return ET.tostring(root, encoding="unicode")
+
+
+def _build_aggregate_xml(source_project: str, package_name: str) -> str:
+    """Build an OBS _aggregate XML that pulls binaries from source_project/package_name."""
+    root = ET.Element("aggregatelist")
+    agg = ET.SubElement(root, "aggregate", project=source_project)
+    ET.SubElement(agg, "package").text = package_name
     ET.indent(root)
     return ET.tostring(root, encoding="unicode")
 

@@ -4,3 +4,4 @@ virtualenv/
 .cache/
 .profile/
 .claude
+__pycache__/

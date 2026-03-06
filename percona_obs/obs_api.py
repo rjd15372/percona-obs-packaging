@@ -27,27 +27,34 @@ from .common import (
 )
 
 
-def _obs_api_error(e: urllib.error.HTTPError, context: str) -> None:
+def _obs_api_error(
+    e: urllib.error.HTTPError, context: str, body: bytes | None = None
+) -> None:
     """Read the OBS HTTP error response body, log it, and exit with a friendly message.
 
     Parses the OBS XML error envelope (``<status code="..."><summary>...</summary></status>``)
     to show the OBS error code and summary instead of a raw traceback.  Adds an
     actionable hint for well-known error codes such as ``repo_dependency``.
+
+    If *body* is supplied (pre-read bytes), it is used directly instead of reading
+    from *e* again (which would fail since the response stream is already consumed).
     """
-    try:
-        body = e.read().decode("utf-8", errors="replace")
-    except Exception:
-        body = ""
-    logger.debug(f"OBS error response body: {body!r}")
+    if body is None:
+        try:
+            body = e.read()
+        except Exception:
+            body = b""
+    decoded = body.decode("utf-8", errors="replace") if body else ""
+    logger.debug(f"OBS error response body: {decoded!r}")
     code = ""
     summary = f"HTTP {e.code}: {e.reason}"
-    if body:
+    if decoded:
         try:
-            root = ET.fromstring(body)
+            root = ET.fromstring(decoded)
             code = root.get("code", "")
             summary = (root.findtext("summary") or "").strip() or summary
         except ET.ParseError:
-            summary = body.strip() or summary
+            summary = decoded.strip() or summary
     msg = f"{code}: {summary}" if code else summary
     if code == "repo_dependency":
         msg += "\n  hint: use --force to bypass"
@@ -61,6 +68,30 @@ def _obs_project_exists(apiurl: str, obs_project_name: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _fetch_obs_package_latest_comment(
+    apiurl: str, obs_project_name: str, package_name: str
+) -> str | None:
+    """Return the comment from the most recent source revision of an OBS package.
+
+    Returns None if the package does not exist, has no revisions, or on any error.
+    """
+    logger.debug(f"fetching revision history: {obs_project_name}/{package_name}")
+    url = osc.core.makeurl(
+        apiurl, ["source", obs_project_name, package_name, "_history"]
+    )
+    try:
+        response = osc.connection.http_GET(url)
+        root = ET.fromstring(response.read())
+        revisions = root.findall("revision")
+        if not revisions:
+            return None
+        last = revisions[-1]
+        comment = last.findtext("comment")
+        return comment.strip() if comment else None
+    except Exception:
+        return None
 
 
 def _fetch_obs_file_md5s(
@@ -198,6 +229,72 @@ def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
     ) and _child_text(current, "description") == _child_text(desired, "description")
 
 
+def _edit_project_meta(
+    apiurl: str, obs_project_name: str, meta: str, force: bool
+) -> None:
+    """Call osc.core.edit_meta for a project, auto-retrying with force=True on
+    repository_access_failure.
+
+    During bootstrapping, repository paths may reference subprojects that don't
+    exist on OBS yet.  force=True bypasses the dependency check; subprojects are
+    created later in the sync loop.  The retry is only attempted when force is
+    False on the first call — if the caller already requested force=True the
+    error is surfaced immediately.
+    """
+    try:
+        with _silence_stdout():
+            osc.core.edit_meta(
+                metatype="prj",
+                path_args=(obs_project_name,),
+                data=[meta],
+                force=force,
+                apiurl=apiurl,
+            )
+    except urllib.error.HTTPError as e:
+        err_body: bytes = b""
+        try:
+            err_body = e.read()
+        except Exception:
+            pass
+        err_code = ""
+        if err_body:
+            try:
+                err_code = ET.fromstring(err_body).get("code", "")
+            except ET.ParseError:
+                pass
+        if not force and err_code == "repository_access_failure":
+            # OBS rejects the meta because a referenced subproject doesn't
+            # exist yet.  Create the project with repository <path> elements
+            # stripped so OBS accepts it; the topo-sort loop will update it
+            # with the full config once the subprojects have been created.
+            logger.debug(
+                f"repository_access_failure on create, stripping paths and retrying: {obs_project_name}"
+            )
+            try:
+                root_el = ET.fromstring(meta)
+                for repo_el in root_el.findall("repository"):
+                    for path_el in repo_el.findall("path"):
+                        repo_el.remove(path_el)
+                stripped = ET.tostring(root_el, encoding="unicode")
+            except ET.ParseError:
+                stripped = meta
+            try:
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="prj",
+                        path_args=(obs_project_name,),
+                        data=[stripped],
+                        force=False,
+                        apiurl=apiurl,
+                    )
+            except urllib.error.HTTPError as e2:
+                _obs_api_error(e2, f"writing project meta for {obs_project_name}")
+        else:
+            _obs_api_error(
+                e, f"writing project meta for {obs_project_name}", body=err_body
+            )
+
+
 def _apply_project_config(
     apiurl: str,
     obs_project_name: str,
@@ -243,32 +340,12 @@ def _apply_project_config(
     if not project_meta_exists:
         logger.debug(f"creating project meta: {obs_project_name}")
         if not dry_run:
-            try:
-                with _silence_stdout():
-                    osc.core.edit_meta(
-                        metatype="prj",
-                        path_args=(obs_project_name,),
-                        data=[meta],
-                        force=False,
-                        apiurl=apiurl,
-                    )
-            except urllib.error.HTTPError as e:
-                _obs_api_error(e, f"creating project meta for {obs_project_name}")
+            _edit_project_meta(apiurl, obs_project_name, meta, force=False)
         _print_create(f"project meta  {obs_project_name}")
     elif force or not _project_meta_subset_equal(current, meta):
         logger.debug(f"updating project meta: {obs_project_name}")
         if not dry_run:
-            try:
-                with _silence_stdout():
-                    osc.core.edit_meta(
-                        metatype="prj",
-                        path_args=(obs_project_name,),
-                        data=[meta],
-                        force=force,
-                        apiurl=apiurl,
-                    )
-            except urllib.error.HTTPError as e:
-                _obs_api_error(e, f"updating project meta for {obs_project_name}")
+            _edit_project_meta(apiurl, obs_project_name, meta, force=force)
         _print_update(f"project meta  {obs_project_name}")
     else:
         logger.debug(f"project meta unchanged: {obs_project_name}")

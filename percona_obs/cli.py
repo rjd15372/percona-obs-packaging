@@ -3,9 +3,11 @@ import logging
 import sys
 
 import osc.conf
+import urllib3.exceptions
 
 from .cmd_build import cmd_build_status, cmd_build_trigger
 from .cmd_profile import _load_profile, cmd_profile_create, cmd_profile_list
+from .cmd_project import cmd_project_verify
 from .cmd_sync import cmd_sync
 from .common import _DIM, _col, logger
 
@@ -118,6 +120,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="project_only",
         help="Only sync project configuration (meta and build config); skip all package syncing.",
     )
+    sync_parser.add_argument(
+        "--branch-from",
+        metavar="PROFILE",
+        default=None,
+        dest="branch_from",
+        help="For packages unchanged since the given profile's last sync, create an "
+        "_aggregate that reuses pre-built binaries from that profile's OBS project "
+        "instead of uploading sources. Both profiles must share the same OBS instance.",
+    )
     sync_parser.set_defaults(func=cmd_sync)
 
     build_parser_ = subparsers.add_parser(
@@ -186,6 +197,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     profile_list_parser.set_defaults(func=cmd_profile_list)
 
+    project_parser = subparsers.add_parser(
+        "project",
+        help="Manage local project configuration.",
+    )
+    project_subparsers = project_parser.add_subparsers(
+        dest="project_command", metavar="<subcommand>"
+    )
+    project_subparsers.required = True
+
+    project_verify_parser = project_subparsers.add_parser(
+        "verify",
+        help="Validate local project configuration (subproject: references in project.yaml files).",
+    )
+    project_verify_parser.set_defaults(func=cmd_project_verify)
+
     return parser
 
 
@@ -201,7 +227,9 @@ def main() -> None:
         if not args.rootprj:
             args.rootprj = profile.get("rootprj")
 
-    if args.command != "profile" and not args.rootprj:
+    _local_only_commands = ("profile", "project")
+
+    if args.command not in _local_only_commands and not args.rootprj:
         parser.error(
             "rootprj is required: supply -R/--rootprj or use -P/--profile <name>"
         )
@@ -212,7 +240,22 @@ def main() -> None:
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 
-    if args.command != "profile":
+    if args.command not in _local_only_commands:
         osc.conf.get_config(override_apiurl=args.apiurl)
 
-    args.func(args)
+    try:
+        args.func(args)
+    except urllib3.exceptions.MaxRetryError as e:
+        host = f"{e.pool.host}:{e.pool.port}" if e.pool else args.apiurl or "OBS"
+        print(f"error: cannot connect to OBS ({host}): {e.reason}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        import errno
+
+        if e.errno in (errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ETIMEDOUT):
+            print(
+                f"error: cannot connect to OBS ({args.apiurl or 'unknown'}): {e.strerror}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
