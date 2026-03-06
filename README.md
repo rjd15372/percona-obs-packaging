@@ -154,6 +154,73 @@ obs sync ppg:17.9
 
 ---
 
+## Triggering and monitoring builds
+
+### Trigger a rebuild
+
+```sh
+obs build trigger                        # all packages
+obs build trigger ppg:17.9              # all packages under a subproject
+obs build trigger ppg:17.9 etcd         # single package
+```
+
+Sends an OBS service run request (`runservice`) for each targeted package, causing
+OBS to re-fetch sources and queue a new build.
+
+### Check build status
+
+```sh
+obs build status
+```
+
+Prints a color-coded tree of live build statuses fetched from OBS:
+
+```
+home:Admin:percona
+├── percona-telemetry-agent
+│   ├── RockyLinux_9           ✔ succeeded
+│   ├── Debian_13              ✔ succeeded
+│   └── xUbuntu_24.04          ✔ succeeded
+├── builddep
+│   ├── golang-1.25
+│   │   ├── RockyLinux_9       ✔ succeeded
+│   │   ├── Debian_13          ✔ succeeded
+│   │   └── xUbuntu_24.04      ✔ succeeded
+│   └── obs-service-tar_scm
+│       ├── RockyLinux_9       ✔ succeeded
+│       ├── Debian_13          ✗ failed
+│       └── xUbuntu_24.04      ✔ succeeded
+└── ppg
+    └── 17.9
+        ├── etcd
+        │   ├── RockyLinux_9   ✔ succeeded
+        │   ├── Debian_13      ✔ succeeded
+        │   └── xUbuntu_24.04  ✔ succeeded
+        └── percona-pg-telemetry
+            ├── RockyLinux_9   ✔ succeeded  [:17]
+            ├── Debian_13      ✔ succeeded  [:17]
+            └── xUbuntu_24.04  ◌ scheduled  [:17]
+```
+
+| Symbol | Color | Meaning |
+|---|---|---|
+| `✔` | green | `succeeded` |
+| `✗` | red | `failed` / `unresolvable` / `broken` |
+| `●` | cyan | `building` / `dispatching` |
+| `◌` | yellow | `scheduled` / `blocked` |
+| `–` | dim | `excluded` / `disabled` |
+
+Scope can be narrowed the same way as other commands:
+
+```sh
+obs build status ppg:17.9               # subproject only (tree rooted there)
+obs build status ppg:17.9 etcd          # single package
+```
+
+Set `NO_COLOR=1` to disable color output.
+
+---
+
 ## Adding a new package
 
 ### Standalone service (Go or other)

@@ -222,16 +222,42 @@ When targeting a specific package (`sync <project> <package>`), the ancestor pro
 
 Project names use colon notation matching the directory hierarchy (e.g. `ppg:17.9`).
 
-### `build [project] [package]`
+### `build trigger [project] [package]`
 
 Triggers an OBS service run (`runservice`) for one or more packages, causing OBS to re-fetch sources and rebuild.
 
 | Call form | Effect |
 |---|---|
-| `build` | Trigger services for all packages under `root/` |
-| `build <project>` | Trigger services for all packages under the project |
-| `build <top-level-package>` | Trigger service for a single top-level package |
-| `build <project> <package>` | Trigger service for a single package under the project |
+| `build trigger` | Trigger services for all packages under `root/` |
+| `build trigger <project>` | Trigger services for all packages under the project |
+| `build trigger <top-level-package>` | Trigger service for a single top-level package |
+| `build trigger <project> <package>` | Trigger service for a single package under the project |
+
+### `build status [project] [package]`
+
+Prints a color-coded tree of live build statuses fetched from OBS.
+
+| Call form | Effect |
+|---|---|
+| `build status` | Status for all packages under `root/` |
+| `build status <project>` | Status for all packages under the project (tree rooted there) |
+| `build status <top-level-package>` | Status for a single top-level package |
+| `build status <project> <package>` | Status for a single package |
+
+Status symbols (color output disabled with `NO_COLOR=1`):
+
+| Symbol | Color | OBS status codes |
+|---|---|---|
+| `✔` | green | `succeeded` |
+| `✗` | red | `failed` / `unresolvable` / `broken` |
+| `●` | cyan | `building` / `dispatching` |
+| `◌` | yellow | `scheduled` / `blocked` |
+| `–` | dim | `excluded` / `disabled` |
+| `?` | dim | `unknown` or any unrecognised code |
+
+For multibuild packages, when all flavors of a repository share the same status the flavor tags are shown inline (e.g. `[:17]`). When flavors differ, each expands to its own sub-line under the repository.
+
+When multiple architectures are configured for the same repository, the highest-priority (most actionable) status is kept per flavor; arch details are not shown.
 
 ### `config apply [--force] [--dirty] [--dry-run] [project] [package]`
 
@@ -366,4 +392,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` (commands: `sync`, `build`, `config apply`) |
+| Management script | `percona-obs` (commands: `sync`, `build trigger`, `build status`, `config apply`) |
