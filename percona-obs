@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
+import contextlib
 import hashlib
+import io
 import logging
 import os
 import shutil
@@ -39,6 +41,7 @@ _CYAN = "\033[36m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
+_ERASE_LINE = "\033[K"  # erase from cursor to end of line
 
 
 def _col(code: str, text: str) -> str:
@@ -46,34 +49,62 @@ def _col(code: str, text: str) -> str:
     return f"{code}{text}{_RESET}" if _USE_COLOR else text
 
 
+def _erase() -> str:
+    """Return the ANSI erase-line sequence when colour output is enabled.
+
+    Prepended to every final status line so that a pending '⌛' line written
+    with a bare carriage return is cleanly overwritten by the status line.
+    """
+    return _ERASE_LINE if _USE_COLOR else ""
+
+
+def _print_pending(text: str) -> None:
+    """Print '  ⌛ <text>' as a transient indicator of an in-progress OBS call.
+
+    Ends with a bare carriage return (no newline) so the next _print_* call
+    overwrites it in place.  No-op when stdout is not a TTY or NO_COLOR is set.
+    """
+    if _USE_COLOR:
+        print(f"  ⌛ {text}", end="\r", flush=True)
+
+
 def _print_create(text: str) -> None:
     """Print a '  + ...' line for a resource being created."""
-    print(f"  {_col(_GREEN, '+')} {text}")
+    print(f"{_erase()}  {_col(_GREEN, '+')} {text}")
 
 
 def _print_update(text: str) -> None:
     """Print a '  ~ ...' line for a resource being updated."""
-    print(f"  {_col(_YELLOW, '~')} {text}")
+    print(f"{_erase()}  {_col(_YELLOW, '~')} {text}")
 
 
 def _print_same(text: str) -> None:
     """Print a '  = ...' line for an unchanged resource."""
-    print(f"  {_col(_DIM, '=')} {text}")
+    print(f"{_erase()}  {_col(_DIM, '=')} {text}")
 
 
 def _print_action(text: str) -> None:
     """Print a '  > ...' line for a triggered action."""
-    print(f"  {_col(_CYAN, '>')} {text}")
+    print(f"{_erase()}  {_col(_CYAN, '>')} {text}")
 
 
 def _print_ok(text: str) -> None:
     """Print a '  ✔  ...' success line."""
-    print(f"  {_col(_GREEN + _BOLD, '✔')}  {text}")
+    print(f"{_erase()}  {_col(_GREEN + _BOLD, '✔')}  {text}")
 
 
 def _print_remove(text: str) -> None:
     """Print a '  - ...' line for a resource being deleted."""
-    print(f"  {_col(_RED, '-')} {text}")
+    print(f"{_erase()}  {_col(_RED, '-')} {text}")
+
+
+def _silence_stdout() -> contextlib.AbstractContextManager:
+    """Context manager that swallows any stdout written inside the block.
+
+    Used to suppress chatty osc library output such as 'Sending meta data...'
+    and 'Done.' that is hardcoded in osc.core.metafile.sync().
+    """
+    return contextlib.redirect_stdout(io.StringIO())
 
 
 def resolve_project_path(project: str) -> Path:
@@ -451,6 +482,7 @@ def _apply_project_config(
     logger.debug(f"  meta XML:\n{meta}")
     current = b""
     project_meta_exists = True
+    _print_pending(f"project meta  {obs_project_name}")
     try:
         logger.debug(f"fetching project meta: {obs_project_name}")
         current = _decode_obs_response(
@@ -466,13 +498,14 @@ def _apply_project_config(
         logger.debug(f"creating project meta: {obs_project_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="prj",
-                    path_args=(obs_project_name,),
-                    data=[meta],
-                    force=False,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="prj",
+                        path_args=(obs_project_name,),
+                        data=[meta],
+                        force=False,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(e, f"creating project meta for {obs_project_name}")
         _print_create(f"project meta  {obs_project_name}")
@@ -480,13 +513,14 @@ def _apply_project_config(
         logger.debug(f"updating project meta: {obs_project_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="prj",
-                    path_args=(obs_project_name,),
-                    data=[meta],
-                    force=force,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="prj",
+                        path_args=(obs_project_name,),
+                        data=[meta],
+                        force=force,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(e, f"updating project meta for {obs_project_name}")
         _print_update(f"project meta  {obs_project_name}")
@@ -498,6 +532,7 @@ def _apply_project_config(
     project_config_str = project_config.get("project-config") or ""
     current_conf = ""
     project_conf_exists = True
+    _print_pending(f"project config  {obs_project_name}")
     try:
         logger.debug(f"fetching project config: {obs_project_name}")
         current_conf = _decode_obs_response(
@@ -513,13 +548,14 @@ def _apply_project_config(
         logger.debug(f"creating project config: {obs_project_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="prjconf",
-                    path_args=(obs_project_name,),
-                    data=[project_config_str],
-                    force=False,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="prjconf",
+                        path_args=(obs_project_name,),
+                        data=[project_config_str],
+                        force=False,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(e, f"creating project config for {obs_project_name}")
         _print_create(f"project config  {obs_project_name}")
@@ -527,13 +563,14 @@ def _apply_project_config(
         logger.debug(f"updating project config: {obs_project_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="prjconf",
-                    path_args=(obs_project_name,),
-                    data=[project_config_str],
-                    force=force,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="prjconf",
+                        path_args=(obs_project_name,),
+                        data=[project_config_str],
+                        force=force,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(e, f"updating project config for {obs_project_name}")
         _print_update(f"project config  {obs_project_name}")
@@ -569,6 +606,7 @@ def _apply_package_config(
     logger.debug(f"  package meta XML:\n{meta}")
     package_exists = True
     current = b""
+    _print_pending(f"package  {obs_project_name}/{package_name}")
     try:
         logger.debug(f"fetching package meta: {obs_project_name}/{package_name}")
         current = _decode_obs_response(
@@ -587,13 +625,14 @@ def _apply_package_config(
         logger.debug(f"creating package meta: {obs_project_name}/{package_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="pkg",
-                    path_args=(obs_project_name, package_name),
-                    data=[meta],
-                    force=False,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="pkg",
+                        path_args=(obs_project_name, package_name),
+                        data=[meta],
+                        force=False,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(
                     e, f"creating package meta for {obs_project_name}/{package_name}"
@@ -603,13 +642,14 @@ def _apply_package_config(
         logger.debug(f"updating package meta: {obs_project_name}/{package_name}")
         if not dry_run:
             try:
-                osc.core.edit_meta(
-                    metatype="pkg",
-                    path_args=(obs_project_name, package_name),
-                    data=[meta],
-                    force=force,
-                    apiurl=apiurl,
-                )
+                with _silence_stdout():
+                    osc.core.edit_meta(
+                        metatype="pkg",
+                        path_args=(obs_project_name, package_name),
+                        data=[meta],
+                        force=force,
+                        apiurl=apiurl,
+                    )
             except urllib.error.HTTPError as e:
                 _obs_api_error(
                     e, f"updating package meta for {obs_project_name}/{package_name}"
@@ -643,6 +683,7 @@ def _upload_obs_files(
     than '-' because they may be service-generated artifacts whose fate cannot
     be determined without running the services.
     """
+    _print_pending(f"files  {obs_project_name}/{package_name}")
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
     new_files: list[str] = []
     updated_files: list[str] = []
@@ -942,7 +983,7 @@ def _has_manual_services(service_file: Path) -> bool:
     return any(svc.get("mode") == "manual" for svc in root.findall("service"))
 
 
-def _run_local_services(obs_dir: Path) -> tuple[Path, list[str]]:
+def _run_local_services(obs_dir: Path, pkg_label: str = "") -> tuple[Path, list[str]]:
     """Run all non-buildtime OBS services locally; return (workdir, manual_artifact_names).
 
     Services declared in obs_dir/_service are invoked in XML declaration order.
@@ -992,6 +1033,7 @@ def _run_local_services(obs_dir: Path) -> tuple[Path, list[str]]:
         cmd += ["--outdir", str(outdir)]
 
         logger.debug(f"running service: {' '.join(cmd)}")
+        _print_pending(f"service {name}  {pkg_label}")
         result = subprocess.run(cmd, cwd=str(workdir), capture_output=True, text=True)
         if result.stdout:
             logger.debug(f"  stdout: {result.stdout.rstrip()}")
@@ -1016,6 +1058,7 @@ def _run_local_services(obs_dir: Path) -> tuple[Path, list[str]]:
         if mode == "manual":
             manual_artifacts.extend(generated)
         logger.debug(f"service {name!r} produced: {generated}")
+        _print_ok(f"service {name}  {pkg_label}")
 
     return workdir, manual_artifacts
 
@@ -1117,23 +1160,16 @@ def cmd_sync(args):
                 and _has_manual_services(service_file)
             )
             if run_services:
-                svc_root = ET.parse(service_file).getroot()
-                manual_svc_names = [
-                    svc.get("name", "?")
-                    for svc in svc_root.findall("service")
-                    if svc.get("mode") == "manual"
-                ]
-                for svc_name in manual_svc_names:
-                    if args.dry_run and not args.dry_run_remote:
-                        _print_update(
-                            f"service {svc_name}  {obs_project_name}/{package_path.name}"
-                        )
-                    else:
-                        _print_action(
-                            f"service {svc_name}  {obs_project_name}/{package_path.name}"
-                        )
                 if args.dry_run and not args.dry_run_remote:
-                    # Pure dry-run: cannot run services; report obs/ diff as-is.
+                    # Pure dry-run: cannot run services; show service names and
+                    # report obs/ diff as-is.
+                    svc_root = ET.parse(service_file).getroot()
+                    for svc in svc_root.findall("service"):
+                        if svc.get("mode") == "manual":
+                            svc_name = svc.get("name", "?")
+                            _print_update(
+                                f"service {svc_name}  {obs_project_name}/{package_path.name}"
+                            )
                     _upload_obs_files(
                         apiurl,
                         obs_project_name,
@@ -1143,7 +1179,10 @@ def cmd_sync(args):
                         dry_run=True,
                     )
                 else:
-                    workdir, manual_artifacts = _run_local_services(obs_dir)
+                    workdir, manual_artifacts = _run_local_services(
+                        obs_dir,
+                        pkg_label=f"{obs_project_name}/{package_path.name}",
+                    )
                     try:
                         combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
                         try:
@@ -1388,10 +1427,11 @@ def cmd_build_trigger(args):
         project_config = load_yaml(project_path / "project.yaml")
         obs_project_name = project_config.get("name") or obs_project
         logger.debug(f"triggering service run: {obs_project_name}/{package_path.name}")
+        _print_pending(f"trigger  {obs_project_name}/{package_path.name}")
         osc.core.runservice(apiurl, obs_project_name, package_path.name)
-        _print_action(f"service  {obs_project_name}/{package_path.name}")
+        _print_ok(f"trigger  {obs_project_name}/{package_path.name}")
 
-    _print_ok("build trigger successful")
+    _print_ok("build trigger done")
 
 
 def cmd_build_status(args):
