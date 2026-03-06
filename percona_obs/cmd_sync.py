@@ -1,3 +1,4 @@
+import hashlib
 import re
 import shutil
 import sys
@@ -28,17 +29,106 @@ from .obs_api import (
     _apply_project_config,
     _delete_obs_package,
     _delete_obs_project,
+    _fetch_obs_file_content,
+    _fetch_obs_file_md5s,
     _fetch_obs_package_latest_comment,
     _fetch_obs_package_names,
     _fetch_obs_subproject_names,
     _obs_project_exists,
     _upload_obs_files,
 )
-from .services import _has_manual_services, _run_local_services
+from .services import (
+    _get_upstream_obs_scm_info,
+    _git_head_sha,
+    _has_manual_services,
+    _run_local_services,
+)
 from .targets import _iter_project_chain, _resolve_targets, _topo_sort_projects
 
 # Matches the standard sync commit message: sync: <branch>@<sha> (<detail>)
 _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
+
+
+def _content_matches_branch(
+    apiurl: str, branch_project: str, package_name: str, obs_dir: Path
+) -> bool:
+    """Return True if local obs/ files match what is in branch_project on OBS.
+
+    Two checks are performed:
+    1. MD5s of all local obs/ files must match the corresponding files on OBS.
+    2. If an upstream obs_scm service is present, the commit hash recorded in
+       the OBS obsinfo file must match the current remote HEAD.
+
+    Used as a fallback when the branch was synced with --dirty (so the revision
+    SHA in the commit message cannot be trusted for git-log comparison).
+    """
+    obs_md5s = _fetch_obs_file_md5s(apiurl, branch_project, package_name, expanded=True)
+    if not obs_md5s:
+        logger.debug(f"content check: no files in {branch_project}/{package_name}")
+        return False
+
+    for filepath in sorted(obs_dir.iterdir()):
+        if not filepath.is_file():
+            continue
+        local_md5 = hashlib.md5(filepath.read_bytes()).hexdigest()
+        if obs_md5s.get(filepath.name) != local_md5:
+            logger.debug(
+                f"content check: {filepath.name} differs  {branch_project}/{package_name}"
+            )
+            return False
+
+    service_file = obs_dir / "_service"
+    if not service_file.is_file():
+        return True
+
+    scm_info = _get_upstream_obs_scm_info(service_file)
+    if scm_info is None:
+        return True  # no upstream obs_scm; file MD5 match is sufficient
+
+    filename_prefix, scm_url, scm_revision = scm_info
+    head_sha = _git_head_sha(scm_url, scm_revision)
+    if not head_sha:
+        logger.debug(
+            f"content check: cannot resolve remote HEAD for {scm_url}@{scm_revision}"
+        )
+        return False  # conservative: can't verify → treat as changed
+
+    # OBS stores service-generated files with a "_service:<name>:" prefix when
+    # the service runs server-side; match both the bare name and that prefix.
+    _obs_scm_prefix = f"_service:obs_scm:{filename_prefix}"
+    obsinfo_name = next(
+        (
+            name
+            for name in obs_md5s
+            if (name.startswith(filename_prefix) or name.startswith(_obs_scm_prefix))
+            and name.endswith(".obsinfo")
+        ),
+        None,
+    )
+    if not obsinfo_name:
+        logger.debug(f"content check: no obsinfo in {branch_project}/{package_name}")
+        return False
+
+    obsinfo_bytes = _fetch_obs_file_content(
+        apiurl, branch_project, package_name, obsinfo_name, expanded=True
+    )
+    if not obsinfo_bytes:
+        return False
+
+    obs_commit: str | None = None
+    for line in obsinfo_bytes.decode("utf-8", errors="replace").splitlines():
+        if line.startswith("commit:"):
+            obs_commit = line.split(":", 1)[1].strip() or None
+            break
+
+    if obs_commit != head_sha:
+        logger.debug(
+            f"content check: obs_scm commit mismatch "
+            f"(OBS={obs_commit!r}, remote={head_sha!r})  {branch_project}/{package_name}"
+        )
+        return False
+
+    return True
 
 
 def _resolve_branch_decision(
@@ -49,33 +139,37 @@ def _resolve_branch_decision(
 ) -> bool:
     """Return True if the package should be aggregated from branch_project.
 
-    Aggregation is safe only when:
-    - The package exists in branch_project with a clean 'sync:' revision message,
-    - The message contains a git SHA that can be found in local history, and
-    - The package directory has no commits since that SHA.
+    Primary path: the branch has a clean 'sync:' revision message with a
+    known git SHA and no local commits since that SHA.
+
+    Fallback (content check): when the revision message cannot be trusted —
+    no message, non-sync format, or a dirty sync — compare obs/ file MD5s and
+    the upstream obs_scm commit hash against what OBS currently holds.
     """
+
+    def _content_check(reason: str) -> bool:
+        logger.debug(f"branch decision: content check  {label}  ({reason})")
+        obs_dir = package_path / "obs"
+        matches = _content_matches_branch(apiurl, branch_project, package_name, obs_dir)
+        if matches:
+            logger.debug(f"branch decision: aggregate  {label}  (content matches)")
+        else:
+            logger.debug(f"branch decision: sync  {label}  (content differs)")
+        return matches
+
     label = f"{branch_project}/{package_name}"
     comment = _fetch_obs_package_latest_comment(apiurl, branch_project, package_name)
     if not comment:
-        logger.debug(
-            f"branch decision: sync  {label}  (no revision comment in branch project)"
-        )
-        return False
+        return _content_check("no revision comment in branch project")
 
     m = _SYNC_MSG_RE.match(comment)
     if not m:
-        logger.debug(
-            f"branch decision: sync  {label}  (comment is not a sync message: {comment!r})"
-        )
-        return False  # not a sync message (e.g. branch: or manual commit)
+        return _content_check(f"comment is not a sync message: {comment!r}")
 
     short_sha = m.group(1)
     details = m.group(2)
     if details.startswith("local changes on"):
-        logger.debug(
-            f"branch decision: sync  {label}  (branch was synced dirty at {short_sha})"
-        )
-        return False  # dirty sync — cannot trust the SHA
+        return _content_check(f"branch was synced dirty at {short_sha}")
 
     changed = _has_package_changes_since(short_sha, package_path)
     if changed:

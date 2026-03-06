@@ -36,6 +36,48 @@ def _has_manual_services(service_file: Path) -> bool:
     return any(svc.get("mode") == "manual" for svc in root.findall("service"))
 
 
+def _get_upstream_obs_scm_info(
+    service_file: Path,
+) -> tuple[str, str, str] | None:
+    """Return (filename_prefix, url, revision) for the upstream obs_scm service.
+
+    Packaging obs_scm services (whose subdir matches root/.+/debian or
+    root/.+/rpm) are ignored.  Returns None if zero or more than one upstream
+    obs_scm services are found, or if filename/url params are missing.
+    """
+    upstream: list[ET.Element] = []
+    for svc in ET.parse(service_file).getroot().findall("service"):
+        if svc.get("name") != "obs_scm":
+            continue
+        subdir_el = svc.find("param[@name='subdir']")
+        if subdir_el is not None and _PACKAGING_SUBDIR_RE.match(
+            (subdir_el.text or "").strip()
+        ):
+            continue
+        upstream.append(svc)
+
+    if len(upstream) != 1:
+        return None
+
+    svc = upstream[0]
+    filename = ""
+    url = ""
+    revision = "HEAD"
+    for p in svc.findall("param"):
+        name = p.get("name", "")
+        val = (p.text or "").strip()
+        if name == "filename":
+            filename = val
+        elif name == "url":
+            url = val
+        elif name == "revision":
+            revision = val
+
+    if not filename or not url:
+        return None
+    return filename, url, revision
+
+
 def _find_upstream_obs_scm_filename(service_file: Path) -> str | None:
     """Return the filename param of the single upstream source obs_scm service.
 
@@ -128,8 +170,8 @@ def _obs_scm_cache_key(svc: ET.Element) -> str:
 def _git_head_sha(url: str, revision: str) -> str | None:
     """Return the resolved commit SHA of revision on a remote git repository.
 
-    Tries branch ref first, then dereferenced annotated tag, then lightweight
-    tag.  Returns None if git is unavailable, the remote is unreachable, or
+    Tries branch ref first, then dereferenced annotated tag, then lightweight tag.
+    Returns None if git is unavailable, the remote is unreachable, or
     no matching ref is found.
     """
     patterns = [
@@ -138,6 +180,7 @@ def _git_head_sha(url: str, revision: str) -> str | None:
         f"refs/tags/{revision}",
     ]
     try:
+        logger.debug(f"resolving git revision {revision!r} on {url}")
         result = subprocess.run(
             ["git", "ls-remote", "--", url] + patterns,
             capture_output=True,
@@ -146,10 +189,22 @@ def _git_head_sha(url: str, revision: str) -> str | None:
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None
+        ref_map = {}
         for line in result.stdout.splitlines():
             parts = line.split("\t", 1)
-            if len(parts) == 2 and parts[0].strip():
-                return parts[0].strip()
+            if len(parts) == 2:
+                sha, ref = parts[0].strip(), parts[1].strip()
+                ref_map[ref] = sha
+        # Preference order: branch, dereferenced annotated tag, lightweight tag
+        branch_ref = f"refs/heads/{revision}"
+        deref_tag_ref = f"refs/tags/{revision}^{{}}"
+        lightweight_tag_ref = f"refs/tags/{revision}"
+        if branch_ref in ref_map:
+            return ref_map[branch_ref]
+        if deref_tag_ref in ref_map:
+            return ref_map[deref_tag_ref]
+        if lightweight_tag_ref in ref_map:
+            return ref_map[lightweight_tag_ref]
     except Exception:
         return None
     return None

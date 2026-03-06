@@ -95,7 +95,7 @@ def _fetch_obs_package_latest_comment(
 
 
 def _fetch_obs_file_md5s(
-    apiurl: str, obs_project_name: str, package_name: str
+    apiurl: str, obs_project_name: str, package_name: str, expanded: bool = False
 ) -> dict[str, str]:
     """Return {filename: md5} for files currently stored in the OBS package source.
 
@@ -103,7 +103,11 @@ def _fetch_obs_file_md5s(
     which causes all local files to be uploaded unconditionally.
     """
     logger.debug(f"fetching file list: {obs_project_name}/{package_name}")
-    url = osc.core.makeurl(apiurl, ["source", obs_project_name, package_name])
+    url = osc.core.makeurl(
+        apiurl,
+        ["source", obs_project_name, package_name],
+        query={"expand": "1"} if expanded else None,
+    )
     try:
         response = osc.connection.http_GET(url)
         root = ET.fromstring(response.read())
@@ -114,6 +118,33 @@ def _fetch_obs_file_md5s(
         }
     except Exception:
         return {}
+
+
+def _fetch_obs_file_content(
+    apiurl: str,
+    obs_project_name: str,
+    package_name: str,
+    filename: str,
+    expanded: bool = False,
+) -> bytes | None:
+    """Fetch the raw bytes of a single file from an OBS package source.
+
+    Returns None if the package or file does not exist or on any error.
+    """
+    logger.debug(f"fetching file content: {obs_project_name}/{package_name}/{filename}")
+    url = osc.core.makeurl(
+        apiurl,
+        ["source", obs_project_name, package_name, filename],
+        query={"expand": "1"} if expanded else None,
+    )
+    try:
+        response = osc.connection.http_GET(url)
+        return response.read()
+    except Exception as exc:
+        logger.debug(
+            f"fetching file content failed: {obs_project_name}/{package_name}/{filename}: {exc}"
+        )
+        return None
 
 
 def _fetch_obs_package_names(apiurl: str, obs_project_name: str) -> set[str]:
