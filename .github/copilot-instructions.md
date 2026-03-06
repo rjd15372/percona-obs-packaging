@@ -218,6 +218,32 @@ If a package's `obs/_service` contains any service with `mode="manual"`, `sync` 
 
 If a service binary is missing from `/usr/lib/obs/service/`, a warning is logged and the service is skipped. A non-zero service exit code aborts the entire `sync` run.
 
+#### Local service cache
+
+To avoid re-running expensive operations (git clones, Go dependency vendoring) on every `sync`, `percona-obs` maintains a two-level on-disk cache at `.cache/` in the project root (git-ignored via `.gitignore`).
+
+**Level 1 — obs_scm output cache** (`.cache/obs_scm/{params_hash}/{head_sha}/`)
+
+Before invoking each `obs_scm` service binary, `percona-obs`:
+1. Computes `params_hash` as the SHA256 of all sorted `name=value` param pairs from the service XML element. Any change to the service config (URL, revision, extract pattern, etc.) produces a different key.
+2. Calls `git ls-remote` (30 s timeout) to resolve the remote revision to a commit SHA (`head_sha`), trying in order: `refs/heads/<revision>`, `refs/tags/<revision>^{}` (annotated tag, peeled to commit), `refs/tags/<revision>`.
+3. Checks `.cache/obs_scm/{params_hash}/{head_sha}/`. On a **hit**, all cached files are restored to the work directory and obs_scm is skipped entirely. On a **miss**, obs_scm runs normally and its output files (`.obsinfo`, `.obscpio`, `.dsc`, etc.) are stored atomically to `.cache/obs_scm/{params_hash}/{head_sha}/`.
+
+If `git ls-remote` fails or times out, obs_scm always runs and its output is not stored.
+
+**Level 2 — manual service output cache** (`.cache/services/{upstream_commit}/`)
+
+After Phase 1 completes, `percona-obs` identifies the *upstream source* `obs_scm` service — the one that fetches the actual software being packaged — by filtering out every `obs_scm` whose `subdir` param matches the regex `root/.+/(debian|rpm)$` (those fetch packaging files from this repo). Exactly one service must remain; zero or two or more trigger a warning and the cache is skipped.
+
+The obsinfo file produced by that upstream obs_scm is named `{filename}.obsinfo` (where `filename` is the service's `filename` param, e.g. `etcd.obsinfo`). Its `commit:` field — the HEAD commit of the upstream repo at fetch time — is used as the cache key.
+
+- **Cache hit**: `.cache/services/{upstream_commit}/` exists and contains files → those files (vendor tarballs, etc.) are copied to the work directory, all `mode="manual"` services are skipped, and the function returns immediately.
+- **Cache miss**: all `mode="manual"` services run in XML-declaration order, then their output files are stored atomically to `.cache/services/{upstream_commit}/`.
+
+**Atomic writes**: both levels write to a temporary directory inside the cache directory (ensuring same filesystem), then rename it into place, preventing partial or corrupt cache entries.
+
+**`--no-cache`**: pass to `sync` to bypass both cache levels unconditionally for that run.
+
 When targeting a specific package (`sync <project> <package>`), the ancestor project chain is only walked if the target project does not yet exist on OBS (fast path avoids redundant GET calls otherwise).
 
 Project names use colon notation matching the directory hierarchy (e.g. `ppg:17.9`).

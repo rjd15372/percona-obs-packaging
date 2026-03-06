@@ -1,3 +1,4 @@
 .serena
 venv/
 virtualenv/
+.cache/
