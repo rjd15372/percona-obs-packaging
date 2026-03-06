@@ -979,6 +979,9 @@ _CACHE_DIR = Path(__file__).parent / ".cache"
 _OBS_SCM_CACHE_DIR = _CACHE_DIR / "obs_scm"
 _SVC_CACHE_DIR = _CACHE_DIR / "services"
 
+# Profile directory (relative to this script, ignored by git)
+_PROFILES_DIR = Path(__file__).parent / ".profile"
+
 # Matches the subdir param of obs_scm services that fetch packaging files
 # from this repo (e.g. "root/percona-telemetry-agent/debian").
 _PACKAGING_SUBDIR_RE = re.compile(r"root/.+/(?:debian|rpm)$")
@@ -1796,6 +1799,77 @@ def cmd_config_apply(args):
     _print_ok(f"config apply successful{suffix}")
 
 
+def _load_profile(name: str) -> dict[str, str]:
+    """Load OBS connection settings from .profile/<name>.yaml.
+
+    Returns a dict with keys matching the CLI long option names (e.g.
+    ``apiurl``, ``rootprj``).  Raises SystemExit if the file is missing.
+    """
+    path = _PROFILES_DIR / f"{name}.yaml"
+    if not path.is_file():
+        available: list[str] = (
+            sorted(p.stem for p in _PROFILES_DIR.glob("*.yaml"))
+            if _PROFILES_DIR.is_dir()
+            else []
+        )
+        hint = (
+            f"  Available profiles: {', '.join(available)}"
+            if available
+            else "  No profiles found in .profile/ — create one first."
+        )
+        raise SystemExit(f"error: profile {name!r} not found: {path}\n{hint}")
+    with path.open(encoding="utf-8") as fh:
+        data: object = yaml.safe_load(fh)
+    if not isinstance(data, dict):
+        raise SystemExit(f"error: profile {path} is empty or not a YAML mapping")
+    return {k: str(v) for k, v in data.items() if v is not None}
+
+
+def cmd_profile_create(args: argparse.Namespace) -> None:
+    if not args.apiurl:
+        raise SystemExit("error: -A/--apiurl is required for 'profile create'")
+    if not args.rootprj:
+        raise SystemExit("error: -R/--rootprj is required for 'profile create'")
+    _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    path = _PROFILES_DIR / f"{args.name}.yaml"
+    exists = path.is_file()
+    data = {"apiurl": args.apiurl, "rootprj": args.rootprj}
+    with path.open("w", encoding="utf-8") as fh:
+        yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
+    label = f"{args.name}  ({path})"
+    if exists:
+        _print_update(label)
+    else:
+        _print_create(label)
+    _print_ok(f"profile create: {args.name}")
+
+
+def cmd_profile_list(args: argparse.Namespace) -> None:
+    if not _PROFILES_DIR.is_dir():
+        print(
+            "  No profiles found. "
+            "Create one with: percona-obs -A <url> -R <prj> profile create <name>"
+        )
+        return
+    profiles = sorted(_PROFILES_DIR.glob("*.yaml"))
+    if not profiles:
+        print(
+            "  No profiles found. "
+            "Create one with: percona-obs -A <url> -R <prj> profile create <name>"
+        )
+        return
+    for path in profiles:
+        print(f"  {_col(_BOLD, path.stem)}")
+        try:
+            with path.open(encoding="utf-8") as fh:
+                data: object = yaml.safe_load(fh)
+            if isinstance(data, dict):
+                for key, val in data.items():
+                    print(f"    {_col(_DIM, key + ':')}  {val}")
+        except Exception:
+            print(f"    {_col(_RED, '(error reading file)')}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="percona-obs",
@@ -1811,8 +1885,14 @@ def build_parser() -> argparse.ArgumentParser:
         "-R",
         "--rootprj",
         metavar="PROJECT",
-        required=True,
         help="OBS root project under which all projects are deployed (e.g. home:username)",
+    )
+    parser.add_argument(
+        "-P",
+        "--profile",
+        metavar="NAME",
+        help="Load OBS connection settings from .profile/<NAME>.yaml "
+        "(sets apiurl and rootprj; explicit -A/-R override the profile values).",
     )
     parser.add_argument(
         "--verbose",
@@ -1973,6 +2053,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     config_apply_parser.set_defaults(func=cmd_config_apply)
 
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="Manage connection profiles.",
+    )
+    profile_subparsers = profile_parser.add_subparsers(
+        dest="profile_command", metavar="<subcommand>"
+    )
+    profile_subparsers.required = True
+
+    profile_create_parser = profile_subparsers.add_parser(
+        "create",
+        help="Create or update a connection profile from -A and -R values.",
+    )
+    profile_create_parser.add_argument(
+        "name",
+        help="Profile name (saved as .profile/<name>.yaml).",
+    )
+    profile_create_parser.set_defaults(func=cmd_profile_create)
+
+    profile_list_parser = profile_subparsers.add_parser(
+        "list",
+        help="List available connection profiles and their settings.",
+    )
+    profile_list_parser.set_defaults(func=cmd_profile_list)
+
     return parser
 
 
@@ -1980,13 +2085,27 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # Resolve profile values; explicit -A / -R always take precedence.
+    if args.profile:
+        profile = _load_profile(args.profile)
+        if not args.apiurl:
+            args.apiurl = profile.get("apiurl")
+        if not args.rootprj:
+            args.rootprj = profile.get("rootprj")
+
+    if args.command != "profile" and not args.rootprj:
+        parser.error(
+            "rootprj is required: supply -R/--rootprj or use -P/--profile <name>"
+        )
+
     if args.verbose:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter(f"  {_col(_DIM, '·')} %(message)s"))
         logger.addHandler(handler)
         logger.setLevel(logging.DEBUG)
 
-    osc.conf.get_config(override_apiurl=args.apiurl)
+    if args.command != "profile":
+        osc.conf.get_config(override_apiurl=args.apiurl)
 
     args.func(args)
 

@@ -141,14 +141,45 @@ These fields map directly to the OBS package `<title>` and `<description>` XML e
 
 `percona-obs` is the management script for syncing local YAML configuration and packaging files to an OBS instance.
 
-**Global options** (required on every call):
+**Global options:**
 ```sh
+# Using explicit flags (always works):
 percona-obs -A <url> -R <rootprj> [--verbose] <command> ...
+
+# Using a named profile (recommended for day-to-day use):
+percona-obs -P <name> [--verbose] <command> ...
+
 #   -A / --apiurl    OBS API URL (e.g. http://my-obs.local:8000)
 #   -R / --rootprj   OBS root project (e.g. home:Admin)
+#   -P / --profile   Load apiurl + rootprj from .profile/<name>.yaml
 #   --verbose        Print debug-level log messages (API calls, unchanged items)
 ```
+`-R` / `--rootprj` is always required — either directly or via a profile.  Explicit `-A` / `-R` flags override the corresponding profile values when both are given.
+
 OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-run wizard).
+
+### Connection profiles
+
+Profiles store per-environment OBS connection settings in `.profile/<name>.yaml` (git-ignored). Create one file per environment; use `-P <name>` to activate it.
+
+**File format** (`.profile/<name>.yaml`):
+```yaml
+apiurl: http://192.168.1.103:3000   # OBS API URL
+rootprj: home:Admin:percona         # OBS root project
+```
+
+**Example** — create a `local` profile and use it:
+```sh
+mkdir -p .profile
+cat > .profile/local.yaml <<EOF
+apiurl: http://192.168.1.103:3000
+rootprj: home:Admin:percona
+EOF
+
+./percona-obs -P local sync ppg:17.9 etcd --dirty --dry-run-remote
+```
+
+If the named profile file does not exist, `percona-obs` exits with an error listing the profiles that are available in `.profile/`.
 
 ### Output format
 

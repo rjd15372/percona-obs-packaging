@@ -87,18 +87,45 @@ file. Everything else is treated as a **subproject**.
 
 ## Usage
 
-All `percona-obs` commands require two global options:
+Every `percona-obs` command needs to know the OBS API URL (`-A`) and the root
+project (`-R`). The recommended way to avoid typing these on every invocation is
+to create a **connection profile** once and then use `-P <name>` to activate it.
+
+### Connection profiles
+
+A profile stores `apiurl` and `rootprj` in `.profile/<name>.yaml` (git-ignored).
+Create one with the `profile create` command, passing `-A` and `-R` explicitly:
 
 ```sh
-./percona-obs -A <apiurl> -R <rootprj> <command> [args]
-#   -A / --apiurl    OBS API URL (e.g. http://my-obs.local:8000)
-#   -R / --rootprj   OBS root project (e.g. home:Admin)
+./percona-obs -A http://my-obs.local:8000 -R home:Admin profile create local
+#   + local  (.profile/local.yaml)
+#   ✔  profile create: local
 ```
 
-For brevity, the examples below assume these are set in a shell alias or wrapper:
+Running the same command again with different values overwrites the profile
+(shown with `~` instead of `+`).
+
+List all available profiles and their settings:
 
 ```sh
-alias obs='./percona-obs -A http://my-obs.local:8000 -R home:Admin'
+./percona-obs profile list
+#   local
+#     apiurl:   http://my-obs.local:8000
+#     rootprj:  home:Admin
+```
+
+Once a profile exists, activate it with `-P`:
+
+```sh
+./percona-obs -P local sync ppg:17.9 etcd --dirty --dry-run-remote
+```
+
+Explicit `-A`/`-R` flags always override the profile values when both are given.
+
+For the examples in the rest of this document a shell alias is used for brevity:
+
+```sh
+alias obs='./percona-obs -P local'
 ```
 
 ---
