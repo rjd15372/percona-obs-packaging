@@ -122,12 +122,6 @@ Once a profile exists, activate it with `-P`:
 
 Explicit `-A`/`-R` flags always override the profile values when both are given.
 
-For the examples in the rest of this document a shell alias is used for brevity:
-
-```sh
-alias obs='./percona-obs -P local'
-```
-
 ---
 
 ## Examples
@@ -135,7 +129,7 @@ alias obs='./percona-obs -P local'
 ### Preview all changes without writing to OBS
 
 ```sh
-obs sync push --dry-run
+./percona-obs -P local sync push --dry-run
 ```
 
 Shows everything that would be created or updated. Nothing is written to OBS.
@@ -143,7 +137,7 @@ Shows everything that would be created or updated. Nothing is written to OBS.
 ### Preview changes and also run local services (Go vendoring, etc.)
 
 ```sh
-obs sync push --dry-run-remote
+./percona-obs -P local sync push --dry-run-remote
 ```
 
 Same as `--dry-run` but also runs `mode="manual"` services locally, letting you verify
@@ -152,7 +146,7 @@ that tools like `go_modules` work correctly before committing anything to OBS.
 ### Sync all packages
 
 ```sh
-obs sync push
+./percona-obs -P local sync push
 ```
 
 Walks the entire `root/` tree, creates or updates all OBS projects and packages, and
@@ -161,7 +155,7 @@ uploads any changed `obs/` files as a single revision per package.
 ### Sync a single standalone package
 
 ```sh
-obs sync push percona-telemetry-agent
+./percona-obs -P local sync push percona-telemetry-agent
 ```
 
 ### Sync a single PostgreSQL extension
@@ -170,13 +164,13 @@ PG extensions live under a subproject (`ppg/17.9/`). Pass the subproject and pac
 name separately:
 
 ```sh
-obs sync push ppg:17.9 percona-pg-telemetry
+./percona-obs -P local sync push ppg:17.9 percona-pg-telemetry
 ```
 
 ### Sync all packages under a subproject
 
 ```sh
-obs sync push ppg:17.9
+./percona-obs -P local sync push ppg:17.9
 ```
 
 ---
@@ -210,7 +204,7 @@ Most packages are identical; only one or two have been modified.
 **Step 2 — Sync the test environment, branching from prod:**
 
 ```sh
-obs -P test sync push --branch-from prod --dirty
+./percona-obs -P test sync push --branch-from prod
 ```
 
 For every unchanged package, `percona-obs` uploads an `_aggregate` pointing at
@@ -227,16 +221,6 @@ Output example:
   @ home:Admin:percona-test:ppg:17.9/percona-postgresql17  → home:Admin:percona:ppg:17.9/percona-postgresql17
   ~ 4 files  home:Admin:percona-test:ppg:17.9/percona-pg-telemetry   ← changed, uploaded
   ✔  sync successful
-```
-
-**Step 3 — Sync again without branching (promote to full sources):**
-
-When you later want to migrate the test environment to build everything independently,
-just run without `--branch-from`. `percona-obs` detects each `_aggregate` and checks
-whether the content has actually changed before deciding to replace it with sources:
-
-```sh
-obs -P test sync push
 ```
 
 ### How unchanged packages are detected
@@ -259,9 +243,9 @@ obs -P test sync push
 ### Trigger a rebuild
 
 ```sh
-obs build trigger                        # all packages
-obs build trigger ppg:17.9              # all packages under a subproject
-obs build trigger ppg:17.9 etcd         # single package
+./percona-obs -P local build trigger                        # all packages
+./percona-obs -P local build trigger ppg:17.9              # all packages under a subproject
+./percona-obs -P local build trigger ppg:17.9 etcd         # single package
 ```
 
 Sends an OBS service run request (`runservice`) for each targeted package, causing
@@ -270,7 +254,7 @@ OBS to re-fetch sources and queue a new build.
 ### Check build status
 
 ```sh
-obs build status
+./percona-obs -P local build status
 ```
 
 Prints a color-coded tree of live build statuses fetched from OBS. Succeeded packages
@@ -314,8 +298,8 @@ home:Admin:percona
 Scope can be narrowed the same way as other commands:
 
 ```sh
-obs build status ppg:17.9               # subproject only (tree rooted there)
-obs build status ppg:17.9 etcd          # single package
+./percona-obs -P local build status ppg:17.9               # subproject only (tree rooted there)
+./percona-obs -P local build status ppg:17.9 etcd          # single package
 ```
 
 Set `NO_COLOR=1` to disable color output.
@@ -327,14 +311,14 @@ Set `NO_COLOR=1` to disable color output.
 ### Preview what would be deleted
 
 ```sh
-obs sync delete --dry-run
-obs sync delete ppg:17.9 --dry-run
+./percona-obs -P local sync delete --dry-run
+./percona-obs -P local sync delete ppg:17.9 --dry-run
 ```
 
 ### Delete a full project tree
 
 ```sh
-obs sync delete --yes --recursive
+./percona-obs -P local sync delete --yes --recursive
 ```
 
 Deletes the root project and all sub-projects (deepest first). Prompts for confirmation
@@ -343,13 +327,13 @@ unless `--yes` is given. Use `--recursive` to delete projects that still contain
 ### Delete a single subproject
 
 ```sh
-obs sync delete ppg:17.9 --yes --recursive
+./percona-obs -P local sync delete ppg:17.9 --yes --recursive
 ```
 
 ### Delete a single package
 
 ```sh
-obs sync delete ppg:17.9 etcd --yes
+./percona-obs -P local sync delete ppg:17.9 etcd --yes
 ```
 
 ---
@@ -368,7 +352,7 @@ obs sync delete ppg:17.9 etcd --yes
 4. Optionally create `package.yaml` with a title and description.
 5. Sync to OBS:
    ```sh
-   obs sync push my-new-service
+   ./percona-obs -P local sync push my-new-service
    ```
 
 ### PostgreSQL extension
@@ -384,7 +368,7 @@ obs sync delete ppg:17.9 etcd --yes
 5. Update `rpm/*.spec` and `debian/control` — keep `@BUILD_FLAVOR@` placeholders.
 6. Sync to OBS:
    ```sh
-   obs sync push ppg:17.9 my-pg-extension
+   ./percona-obs -P local sync push ppg:17.9 my-pg-extension
    ```
 
 ---
