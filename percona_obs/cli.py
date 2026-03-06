@@ -8,7 +8,7 @@ import urllib3.exceptions
 from .cmd_build import cmd_build_status, cmd_build_trigger
 from .cmd_profile import _load_profile, cmd_profile_create, cmd_profile_list
 from .cmd_project import cmd_project_verify
-from .cmd_sync import cmd_sync, cmd_sync_delete
+from .cmd_sync import cmd_sync, cmd_sync_delete, cmd_sync_promote
 from .common import _DIM, _col, logger
 
 
@@ -177,6 +177,56 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would be deleted without making any changes.",
     )
     sync_delete_parser.set_defaults(func=cmd_sync_delete)
+
+    sync_promote_parser = sync_subparsers.add_parser(
+        "promote",
+        help="Replace _aggregate (branch) packages with their full local source files.",
+    )
+    sync_promote_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Project name (colon notation, e.g. ppg:17.9) or top-level package name. "
+        "If omitted, all packages under root/ are targeted.",
+    )
+    sync_promote_parser.add_argument(
+        "package",
+        nargs="?",
+        default=None,
+        help="Package name. If omitted, all packages under the project are targeted.",
+    )
+    sync_promote_parser.add_argument(
+        "--dirty",
+        action="store_true",
+        default=False,
+        help="Skip the git clean check (allow uncommitted changes or an unpushed HEAD).",
+    )
+    sync_promote_parser.add_argument(
+        "-m",
+        "--message",
+        default="",
+        metavar="MSG",
+        help="Commit message recorded in the OBS source revision when files are uploaded.",
+    )
+    sync_promote_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be promoted without writing anything to OBS.",
+    )
+    sync_promote_parser.add_argument(
+        "--no-services",
+        action="store_true",
+        default=False,
+        help="Skip running local OBS services (mode=manual). Upload obs/ files as-is.",
+    )
+    sync_promote_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable the service artifact cache; always run manual services (e.g. go_modules).",
+    )
+    sync_promote_parser.set_defaults(func=cmd_sync_promote)
 
     build_parser_ = subparsers.add_parser(
         "build",

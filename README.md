@@ -223,6 +223,28 @@ Output example:
   ✔  sync successful
 ```
 
+### Promoting branch packages to full sources
+
+After branching, when you want a package (or all packages) to build from local sources instead
+of pulling pre-built binaries from the branch project, run `sync promote`:
+
+```sh
+./percona-obs -P test sync promote           # promote all branch packages
+./percona-obs -P test sync promote ppg:17.9  # promote all packages under a subproject
+./percona-obs -P test sync promote ppg:17.9 etcd  # promote a single package
+```
+
+For each package whose latest OBS revision was created by a `--branch-from` sync,
+`percona-obs` replaces the `_aggregate` with the full local `obs/` source files
+(running any `mode="manual"` services as needed).  Packages that already hold
+real sources are skipped with `=`.
+
+Preview what would be promoted without writing to OBS:
+
+```sh
+./percona-obs -P test sync promote --dry-run
+```
+
 ### How unchanged packages are detected
 
 `percona-obs` uses a two-level decision for each package:

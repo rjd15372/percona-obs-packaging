@@ -584,3 +584,92 @@ def cmd_sync_delete(args) -> None:
             )
 
     _print_ok("delete done")
+
+
+def cmd_sync_promote(args) -> None:
+    """Promote branch packages to full source syncs.
+
+    For each package in the given scope that currently holds a _aggregate
+    (created by a prior --branch-from sync), replace it with the local obs/
+    source files.  Packages that are already sourced are skipped.
+
+    Supported call forms:
+      sync promote                        — promote all packages
+      sync promote <project>              — promote all packages under a project
+      sync promote <project> <package>    — promote a single package
+    """
+    if not args.dirty:
+        _check_git_clean()
+
+    targets = _resolve_targets(args)
+    apiurl = osc.conf.config["apiurl"]
+    dry_run = args.dry_run
+    promoted = 0
+    skipped = 0
+
+    for obs_project, package_path in targets:
+        project_path = package_path.parent
+        project_config = load_yaml(project_path / "project.yaml")
+        obs_project_name = project_config.get("name") or obs_project
+
+        obs_dir = package_path / "obs"
+        if not obs_dir.is_dir():
+            skipped += 1
+            continue
+
+        # Check if the OBS package is currently a branch aggregate.
+        latest_comment = _fetch_obs_package_latest_comment(
+            apiurl, obs_project_name, package_path.name
+        )
+        if not latest_comment or not _BRANCH_MSG_RE.match(latest_comment):
+            _print_same(f"files  {obs_project_name}/{package_path.name}")
+            skipped += 1
+            continue
+
+        # It's a branch — promote to full sources.
+        message = args.message or _generate_sync_message(args.dirty)
+        service_file = obs_dir / "_service"
+        run_services = (
+            not args.no_services
+            and service_file.is_file()
+            and _has_manual_services(service_file)
+        )
+        if run_services and not dry_run:
+            workdir, manual_artifacts = _run_local_services(
+                obs_dir,
+                pkg_label=f"{obs_project_name}/{package_path.name}",
+                cache=not args.no_cache,
+            )
+            try:
+                combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                try:
+                    for f in obs_dir.iterdir():
+                        if f.is_file():
+                            shutil.copy2(f, combined / f.name)
+                    for art_name in manual_artifacts:
+                        shutil.copy2(workdir / art_name, combined / art_name)
+                    _upload_obs_files(
+                        apiurl,
+                        obs_project_name,
+                        package_path.name,
+                        combined,
+                        message=message,
+                        dry_run=False,
+                    )
+                finally:
+                    shutil.rmtree(combined, ignore_errors=True)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+        else:
+            _upload_obs_files(
+                apiurl,
+                obs_project_name,
+                package_path.name,
+                obs_dir,
+                message=message,
+                dry_run=dry_run,
+            )
+        promoted += 1
+
+    suffix = " (dry run)" if dry_run else ""
+    _print_ok(f"promote successful{suffix}  ({promoted} promoted, {skipped} skipped)")

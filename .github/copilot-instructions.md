@@ -324,6 +324,25 @@ Options:
 
 Projects that do not exist on OBS are silently skipped. Projects are always deleted with `force=True` to bypass inter-project repository dependency checks when removing a whole tree.
 
+### `sync promote [--dirty] [--dry-run] [--no-services] [--no-cache] [-m MSG] [project] [package]`
+
+Promotes branch packages (created by a prior `--branch-from` sync) back to full source syncs. For each targeted package whose latest OBS revision comment matches the `branch:` pattern, the `_aggregate` is replaced with the local `obs/` source files (running any `mode="manual"` services as needed). Packages that already hold real sources are skipped (`=` output).
+
+| Call form | Effect |
+|---|---|
+| `sync promote` | Promote all branch packages under rootprj |
+| `sync promote <project>` | Promote all branch packages under the project |
+| `sync promote <project> <package>` | Promote a single package |
+
+Detection: reads the latest OBS revision comment via `_fetch_obs_package_latest_comment`; if it matches `_BRANCH_MSG_RE` (`^branch: \S+ \((.+)/[^/]+\)$`), the package is a branch and will be promoted. Packages without an `obs/` directory are silently skipped.
+
+Options:
+- `--dirty` — skip the git clean check.
+- `--dry-run` — show what would be promoted without writing to OBS. Services are not run in dry-run mode.
+- `--no-services` — upload `obs/` files as-is without running manual services.
+- `--no-cache` — disable the service artifact cache.
+- `-m`/`--message` — OBS revision commit message (defaults to the standard sync message).
+
 ### Local service execution
 
 If a package's `obs/_service` contains any service with `mode="manual"`, `sync` automatically runs all non-buildtime services locally before uploading. This is required for packages like Go services that use `go_modules` (mode=manual) to vendor dependencies.
@@ -592,4 +611,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` (commands: `sync push`, `sync delete`, `build trigger`, `build status`, `profile create`, `profile list`, `project verify`) |
+| Management script | `percona-obs` (commands: `sync push`, `sync delete`, `sync promote`, `build trigger`, `build status`, `profile create`, `profile list`, `project verify`) |
