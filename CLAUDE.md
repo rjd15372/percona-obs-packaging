@@ -24,6 +24,10 @@ venv/bin/pyright                # type-check
 
 Both must pass (black: "N files reformatted" or "N files left unchanged"; pyright: "0 errors") before considering the task done.
 
+## Implementation Planning
+
+**Before changing any code, always write an implementation plan and show it to the user for approval.** Only proceed with code changes after the user has explicitly approved the plan. This applies to all non-trivial changes (new features, refactors, multi-file edits).
+
 ## Key Files
 
 | File | Purpose |

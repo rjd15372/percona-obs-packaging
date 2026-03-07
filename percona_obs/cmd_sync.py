@@ -18,10 +18,12 @@ from .common import (
     _print_remove,
     _print_same,
     _print_update,
+    apply_env_substitution,
     find_projects,
     is_package,
     load_yaml,
     logger,
+    parse_env_overrides,
     resolve_project_path,
 )
 from .git_utils import (
@@ -54,6 +56,20 @@ from .targets import _iter_project_chain, _resolve_targets, _topo_sort_projects
 _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
 # Matches a branch aggregate message: branch: <profile> (<obs_project>/<package>)
 _BRANCH_MSG_RE = re.compile(r"^branch: \S+ \((.+)/[^/]+\)$")
+
+
+_OBS_SUBSTITUTABLE = {"_service", "_aggregate", "_link"}
+
+
+def _copy_with_env_subst(
+    src: Path, dst_dir: Path, env_vars: dict[str, str] | None
+) -> None:
+    """Copy src into dst_dir, substituting ${VAR} tokens for substitutable obs files."""
+    if env_vars and src.name in _OBS_SUBSTITUTABLE:
+        text = apply_env_substitution(src.read_text("utf-8"), env_vars, source=src)
+        (dst_dir / src.name).write_text(text, "utf-8")
+    else:
+        shutil.copy2(src, dst_dir / src.name)
 
 
 def _multibuild_packages(obs_dir: Path, base_name: str) -> list[str]:
@@ -243,6 +259,11 @@ def cmd_sync(args):
     targets = _resolve_targets(args)
     apiurl = osc.conf.config["apiurl"]
 
+    # Build env_vars from profile env + -e overrides (already merged by main()).
+    env_vars: dict[str, str] | None = (
+        parse_env_overrides(args.env_overrides) if args.env_overrides else None
+    )
+
     # Resolve --branch-from profile (same OBS instance, different root project).
     branch_rootprj: str | None = None
     if args.branch_from:
@@ -275,6 +296,7 @@ def cmd_sync(args):
         args.rootprj,
         force=args.force,
         dry_run=dry_run_obs,
+        env_vars=env_vars,
     )
     seen_projects.add(args.rootprj)
 
@@ -301,6 +323,7 @@ def cmd_sync(args):
                 args.rootprj,
                 force=args.force,
                 dry_run=dry_run_obs,
+                env_vars=env_vars,
             )
             seen_projects.add(raw_proj)
 
@@ -342,6 +365,7 @@ def cmd_sync(args):
                             args.rootprj,
                             force=args.force,
                             dry_run=dry_run_obs,
+                            env_vars=env_vars,
                         )
                         seen_projects.add(raw_proj)
 
@@ -460,7 +484,7 @@ def cmd_sync(args):
                             try:
                                 for f in obs_dir.iterdir():
                                     if f.is_file():
-                                        shutil.copy2(f, combined / f.name)
+                                        _copy_with_env_subst(f, combined, env_vars)
                                 for art_name in manual_artifacts:
                                     shutil.copy2(
                                         workdir / art_name, combined / art_name
@@ -478,14 +502,31 @@ def cmd_sync(args):
                         finally:
                             shutil.rmtree(workdir, ignore_errors=True)
                 else:
-                    _upload_obs_files(
-                        apiurl,
-                        obs_project_name,
-                        package_path.name,
-                        obs_dir,
-                        message=message,
-                        dry_run=dry_run_obs,
-                    )
+                    if env_vars:
+                        sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                        try:
+                            for f in obs_dir.iterdir():
+                                if f.is_file():
+                                    _copy_with_env_subst(f, sub_dir, env_vars)
+                            _upload_obs_files(
+                                apiurl,
+                                obs_project_name,
+                                package_path.name,
+                                sub_dir,
+                                message=message,
+                                dry_run=dry_run_obs,
+                            )
+                        finally:
+                            shutil.rmtree(sub_dir, ignore_errors=True)
+                    else:
+                        _upload_obs_files(
+                            apiurl,
+                            obs_project_name,
+                            package_path.name,
+                            obs_dir,
+                            message=message,
+                            dry_run=dry_run_obs,
+                        )
 
     # --- orphan cleanup ---
     # Remove packages on OBS that no longer exist locally, but only when the

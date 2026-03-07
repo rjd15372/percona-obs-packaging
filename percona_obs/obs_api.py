@@ -345,6 +345,7 @@ def _apply_project_config(
     rootprj: str,
     force: bool = False,
     dry_run: bool = False,
+    env_vars: dict[str, str] | None = None,
 ) -> None:
     """Create or update OBS project metadata and build config from project.yaml.
 
@@ -355,7 +356,7 @@ def _apply_project_config(
 
     Prints '+' for creates, '~' for updates, '=' for unchanged resources.
     """
-    project_config = _load_project_config_with_inheritance(project_path)
+    project_config = _load_project_config_with_inheritance(project_path, env_vars)
     meta = build_project_meta(
         obs_project_name,
         project_config.get("title", ""),
@@ -576,7 +577,16 @@ def _upload_obs_files(
                 ["source", obs_project_name, package_name, filepath.name],
                 query={"rev": "upload"},
             )
-            osc.connection.http_PUT(url, file=str(filepath))
+            try:
+                osc.connection.http_PUT(url, file=str(filepath))
+            except urllib.error.HTTPError as e:
+                if e.code == 400:
+                    raise SystemExit(
+                        f"error: OBS rejected {filepath.name} for "
+                        f"{obs_project_name}/{package_name} (HTTP 400 Bad Request).\n"
+                        f"       The file may use features unsupported by this OBS instance."
+                    ) from None
+                raise
 
     for obs_name in sorted(obs_md5s.keys() - local_files):
         if dry_run:
