@@ -5,7 +5,7 @@
 
 export USE_PGXS=1
 
-PG_VERSION := @BUILD_FLAVOR@
+PG_VERSION := 17
 
 %:
 	dh $@

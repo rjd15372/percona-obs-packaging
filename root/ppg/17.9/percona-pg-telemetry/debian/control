@@ -5,10 +5,10 @@ Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
  debhelper (>= 10)
 
-Package: percona-pg-telemetry@BUILD_FLAVOR@
+Package: percona-pg-telemetry17
 Architecture: any
 Depends:
- percona-telemetry-agent, percona-postgresql-@BUILD_FLAVOR@,
+ percona-telemetry-agent, percona-postgresql-17,
  ${misc:Depends},
  ${shlibs:Depends},
 Description: Percona telemetry extension for PostgreSQL 17
