@@ -151,10 +151,11 @@ percona-obs -P <name> [--verbose] <command> ...
 
 #   -A / --apiurl    OBS API URL (e.g. http://my-obs.local:8000)
 #   -R / --rootprj   OBS root project (e.g. home:Admin)
-#   -P / --profile   Load apiurl + rootprj from .profile/<name>.yaml
+#   -P / --profile   Load apiurl, rootprj, and env from .profile/<name>.yaml
+#   -e KEY:VALUE     Define or override an env variable (repeatable; VALUE may be empty)
 #   --verbose        Print debug-level log messages (API calls, unchanged items)
 ```
-`-R` / `--rootprj` is always required — either directly or via a profile.  Explicit `-A` / `-R` flags override the corresponding profile values when both are given.
+`-R` / `--rootprj` is always required — either directly or via a profile.  Explicit `-A` / `-R` / `-e` flags override the corresponding profile values when both are given.
 
 OBS credentials are read from `~/.config/osc/oscrc` (created by `osc`'s first-run wizard).
 
@@ -166,20 +167,58 @@ Profiles store per-environment OBS connection settings in `.profile/<name>.yaml`
 ```yaml
 apiurl: http://192.168.1.103:3000   # OBS API URL
 rootprj: home:Admin:percona         # OBS root project
+env:                                 # optional: variables for ${VAR} substitution
+  - name: REMOTE_OBS_ORG_INTERCONNECT
+    value: 'openSUSE.org:'           # values containing colons must be quoted
 ```
 
-**Example** — create a `local` profile and use it:
+**Example** — create a `dev` profile and use it:
 ```sh
-mkdir -p .profile
-cat > .profile/local.yaml <<EOF
-apiurl: http://192.168.1.103:3000
-rootprj: home:Admin:percona
-EOF
+./percona-obs -A http://192.168.1.103:3000 -R home:Admin:percona \
+  -e REMOTE_OBS_ORG_INTERCONNECT:'openSUSE.org:' \
+  profile create dev
 
-./percona-obs -P local sync ppg:17.9 etcd --dirty --dry-run-remote
+./percona-obs -P dev sync ppg:17.9 etcd --dirty --dry-run-remote
+```
+
+To add or update an env variable in an existing profile, use `-P` (to load the current state) plus `-e`:
+```sh
+./percona-obs -P dev -e ANOTHER_VAR:value profile create dev
 ```
 
 If the named profile file does not exist, `percona-obs` exits with an error listing the profiles that are available in `.profile/`.
+
+### Env variable substitution
+
+`${VAR}` tokens in the following files under `root/` are substituted with values from the active profile's `env` section (or `-e` flags) before the content is used or uploaded to OBS:
+
+- `project.yaml` and `package.yaml` — project/package metadata
+- `obs/_service`, `obs/_aggregate`, `obs/_link` — OBS source files
+
+This lets a single source tree target different OBS environments. For example, a local OBS instance interconnected to `build.opensuse.org` needs an `openSUSE.org:` prefix on external project references, while the public OBS does not:
+
+```yaml
+# root/project.yaml
+repositories:
+  - name: RockyLinux_9
+    paths:
+      - project: ${REMOTE_OBS_ORG_INTERCONNECT}RockyLinux:9
+        repository: standard
+```
+
+```yaml
+# .profile/dev.yaml  (local OBS with interconnect)
+env:
+  - name: REMOTE_OBS_ORG_INTERCONNECT
+    value: 'openSUSE.org:'
+
+# .profile/prod.yaml  (public build.opensuse.org — no prefix needed)
+env:
+  - name: REMOTE_OBS_ORG_INTERCONNECT
+    value: ''
+```
+
+Use `project verify -P <profile>` to validate that all `${VAR}` tokens in the tree are defined in the given profile.
 
 ### Output format
 
@@ -421,6 +460,29 @@ Status symbols (color output disabled with `NO_COLOR=1`):
 For multibuild packages, when all flavors of a repository share the same status the flavor tags are shown inline (e.g. `[:17]`). When flavors differ, each expands to its own sub-line under the repository.
 
 When multiple architectures are configured for the same repository, the highest-priority (most actionable) status is kept per flavor; arch details are not shown.
+
+### `project verify [-P <profile>] [-e KEY:VALUE ...]`
+
+Validates local project configuration without connecting to OBS.
+
+**Check 1 — subproject references**: every `subproject:` entry in all `project.yaml` files must resolve to an existing directory under `root/`.
+
+**Check 2 — env variable coverage**: every `${VAR}` token found in `project.yaml`, `package.yaml`, and `obs/_service` / `obs/_aggregate` / `obs/_link` files must be defined in the active env.
+
+Env resolution for the check (same precedence as all other commands):
+- Profile env (`-P <profile>`) provides the base values.
+- `-e KEY:VALUE` flags override or supplement individual variables.
+- With no profile and no `-e` flags, any `${VAR}` token found is an error with a hint to supply a profile.
+
+```sh
+# Check against the dev profile
+./percona-obs -P dev project verify
+
+# Check with an inline override (no profile file needed)
+./percona-obs -e REMOTE_OBS_ORG_INTERCONNECT:'openSUSE.org:' project verify
+```
+
+Exit code is 0 on success, 1 if any check fails.
 
 ## Adding a New PostgreSQL Extension
 1. Copy `ppg/17.9/percona-pg-telemetry/` as a template

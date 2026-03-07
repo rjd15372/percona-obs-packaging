@@ -1,5 +1,5 @@
 <aggregatelist>
-  <aggregate project="openSUSE.org:openSUSE:Tools">
+  <aggregate project="${REMOTE_OBS_ORG_INTERCONNECT}openSUSE:Tools">
     <package>obs-service-recompress</package>
   </aggregate>
 </aggregatelist>

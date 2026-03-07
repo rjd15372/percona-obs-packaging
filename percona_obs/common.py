@@ -288,3 +288,18 @@ def _decode_obs_response(raw) -> str:
     if isinstance(raw, bytes):
         return raw.decode()
     return str(raw) if raw else ""
+
+
+def parse_env_overrides(entries: list[str]) -> dict[str, str]:
+    """Parse a list of ``KEY:VALUE`` strings from ``-e`` flags.
+
+    Splits on the first ``:`` so values containing colons (e.g. ``openSUSE.org:``)
+    are preserved correctly.  Raises ``SystemExit`` on malformed entries.
+    """
+    result: dict[str, str] = {}
+    for entry in entries:
+        key, sep, val = entry.partition(":")
+        if not sep:
+            raise SystemExit(f"error: -e {entry!r}: expected KEY:VALUE format")
+        result[key.strip()] = val
+    return result

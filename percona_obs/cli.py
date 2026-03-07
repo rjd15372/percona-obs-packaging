@@ -6,7 +6,12 @@ import osc.conf
 import urllib3.exceptions
 
 from .cmd_build import cmd_build_status, cmd_build_trigger
-from .cmd_profile import _load_profile, cmd_profile_create, cmd_profile_list
+from .cmd_profile import (
+    _load_profile,
+    _load_profile_env_strings,
+    cmd_profile_create,
+    cmd_profile_list,
+)
 from .cmd_project import cmd_project_verify
 from .cmd_sync import cmd_sync, cmd_sync_delete, cmd_sync_promote
 from .common import _DIM, _col, logger
@@ -35,6 +40,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help="Load OBS connection settings from .profile/<NAME>.yaml "
         "(sets apiurl and rootprj; explicit -A/-R override the profile values).",
+    )
+    parser.add_argument(
+        "-e",
+        "--env",
+        metavar="KEY:VALUE",
+        action="append",
+        default=[],
+        dest="env_overrides",
+        help="Define an env variable as KEY:VALUE (VALUE may be empty, e.g. KEY:). "
+        "Can be repeated. Supplements or overrides the active profile's env section.",
     )
     parser.add_argument(
         "--verbose",
@@ -305,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     project_verify_parser = project_subparsers.add_parser(
         "verify",
-        help="Validate local project configuration (subproject: references in project.yaml files).",
+        help="Validate local project configuration (subproject: references, env variable usage).",
     )
     project_verify_parser.set_defaults(func=cmd_project_verify)
 
@@ -316,13 +331,17 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Resolve profile values; explicit -A / -R always take precedence.
+    # Resolve profile values; explicit -A / -R / -e always take precedence.
     if args.profile:
         profile = _load_profile(args.profile)
         if not args.apiurl:
             args.apiurl = profile.get("apiurl")
         if not args.rootprj:
             args.rootprj = profile.get("rootprj")
+        # Prepend profile env so CLI -e flags (appended later) override them.
+        args.env_overrides = (
+            _load_profile_env_strings(args.profile) + args.env_overrides
+        )
 
     _local_only_commands = ("profile", "project")
 

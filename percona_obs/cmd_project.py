@@ -1,13 +1,23 @@
+import re
 import sys
 from pathlib import Path
 
+import yaml
+
 from .common import (
     REPO_ROOT,
+    _PROFILES_DIR,
     _RED,
     _col,
     _print_ok,
     load_yaml,
+    parse_env_overrides,
 )
+
+# ${VAR} tokens are only supported in these files
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_YAML_FILENAMES = {"project.yaml", "package.yaml"}
+_OBS_FILENAMES = {"_service", "_aggregate", "_link"}
 
 
 def _validate_subproject_refs() -> list[tuple[Path, str]]:
@@ -39,11 +49,95 @@ def _validate_subproject_refs() -> list[tuple[Path, str]]:
     return errors
 
 
+def _find_env_var_usages() -> dict[str, list[tuple[Path, int]]]:
+    """Scan project.yaml, package.yaml, and obs/{_service,_aggregate,_link} files
+    for ${VAR} tokens.
+
+    Returns a dict mapping variable name → list of (file_path, line_no).
+    """
+    usages: dict[str, list[tuple[Path, int]]] = {}
+
+    def _scan(file_path: Path) -> None:
+        with file_path.open(encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                for m in _ENV_VAR_RE.finditer(line):
+                    usages.setdefault(m.group(1), []).append((file_path, lineno))
+
+    for name in sorted(_YAML_FILENAMES):
+        for fp in sorted(REPO_ROOT.rglob(name)):
+            _scan(fp)
+    for name in sorted(_OBS_FILENAMES):
+        for fp in sorted(REPO_ROOT.rglob(f"obs/{name}")):
+            _scan(fp)
+
+    return usages
+
+
+def _validate_env_vars(
+    env_vars: dict[str, str] | None,
+) -> list[tuple[Path, int, str, str]]:
+    """Check that every ${VAR} token is resolvable.
+
+    ``env_vars`` is the merged dict of profile env + CLI overrides.  Pass
+    ``None`` when no profile is active and no -e flags were given — every
+    token found will be reported as an error telling the user to supply a
+    profile.
+
+    Returns a list of (file_path, line_no, var_name, error_detail).
+    """
+    usages = _find_env_var_usages()
+    if not usages:
+        return []
+
+    errors: list[tuple[Path, int, str, str]] = []
+    for var_name, locations in sorted(usages.items()):
+        if env_vars is None:
+            detail = "no profile active — re-run with -P <profile> or -e KEY:VALUE"
+        elif var_name not in env_vars:
+            detail = "undefined in the active profile/env"
+        else:
+            continue
+        for fp, lineno in locations:
+            errors.append((fp, lineno, var_name, detail))
+
+    return errors
+
+
+def _load_profile_env(profile_name: str) -> dict[str, str]:
+    """Return the env dict from .profile/<profile_name>.yaml, or exit on error."""
+    profile_path = _PROFILES_DIR / f"{profile_name}.yaml"
+    if not profile_path.is_file():
+        raise SystemExit(f"error: profile {profile_name!r} not found: {profile_path}")
+    with profile_path.open(encoding="utf-8") as fh:
+        data: object = yaml.safe_load(fh) or {}
+    env_list = data.get("env", []) if isinstance(data, dict) else []
+    return {
+        item["name"]: item["value"] if item.get("value") is not None else ""
+        for item in (env_list if isinstance(env_list, list) else [])
+        if isinstance(item, dict) and "name" in item
+    }
+
+
 def cmd_project_verify(args) -> None:
-    errors = _validate_subproject_refs()
-    if errors:
-        for yaml_path, msg in errors:
-            rel = yaml_path.relative_to(REPO_ROOT.parent)
-            print(f"error: {rel}: {msg}", file=sys.stderr)
+    # Build env_vars from -P profile (if any), then apply -e overrides.
+    env_vars: dict[str, str] | None = None
+    if args.profile:
+        env_vars = _load_profile_env(args.profile)
+    if args.env_overrides:
+        overrides = parse_env_overrides(args.env_overrides)
+        env_vars = {**(env_vars or {}), **overrides}
+
+    ref_errors = _validate_subproject_refs()
+    env_errors = _validate_env_vars(env_vars)
+
+    for yaml_path, msg in ref_errors:
+        rel = yaml_path.relative_to(REPO_ROOT.parent)
+        print(f"error: {rel}: {msg}", file=sys.stderr)
+
+    for file_path, lineno, var_name, detail in env_errors:
+        rel = file_path.relative_to(REPO_ROOT.parent)
+        print(f"error: {rel}:{lineno}: ${{{var_name}}}: {detail}", file=sys.stderr)
+
+    if ref_errors or env_errors:
         sys.exit(1)
-    _print_ok("project verify: all subproject references are valid")
+    _print_ok("project verify: all checks passed")

@@ -11,6 +11,7 @@ from .common import (
     _print_create,
     _print_ok,
     _print_update,
+    parse_env_overrides,
 )
 
 
@@ -40,6 +41,27 @@ def _load_profile(name: str) -> dict[str, str]:
     return {k: str(v) for k, v in data.items() if v is not None}
 
 
+def _load_profile_env_strings(name: str) -> list[str]:
+    """Return the ``env`` section of .profile/<name>.yaml as ``KEY:VALUE`` strings.
+
+    Returns an empty list if the profile has no ``env`` section or does not exist.
+    Used by ``main()`` to prepend profile env into ``args.env_overrides`` so that
+    explicit ``-e`` flags always take precedence.
+    """
+    path = _PROFILES_DIR / f"{name}.yaml"
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8") as fh:
+        data: object = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        return []
+    return [
+        f"{item['name']}:{item['value'] if item.get('value') is not None else ''}"
+        for item in (data.get("env") or [])
+        if isinstance(item, dict) and "name" in item
+    ]
+
+
 def cmd_profile_create(args: argparse.Namespace) -> None:
     if not args.apiurl:
         raise SystemExit("error: -A/--apiurl is required for 'profile create'")
@@ -48,7 +70,12 @@ def cmd_profile_create(args: argparse.Namespace) -> None:
     _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     path = _PROFILES_DIR / f"{args.name}.yaml"
     exists = path.is_file()
-    data = {"apiurl": args.apiurl, "rootprj": args.rootprj}
+
+    env_vars = parse_env_overrides(args.env_overrides)
+    data: dict[str, object] = {"apiurl": args.apiurl, "rootprj": args.rootprj}
+    if env_vars:
+        data["env"] = [{"name": k, "value": v} for k, v in sorted(env_vars.items())]
+
     with path.open("w", encoding="utf-8") as fh:
         yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
     label = f"{args.name}  ({path})"

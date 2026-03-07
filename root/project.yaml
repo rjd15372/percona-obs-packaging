@@ -3,21 +3,21 @@ description: "OBS RPM and DEB packaging for Percona products."
 repositories:
   - name: RockyLinux_9
     paths:
-      - project: openSUSE.org:RockyLinux:9
+      - project: ${REMOTE_OBS_ORG_INTERCONNECT}RockyLinux:9
         repository: standard
       - subproject: builddep
         repository: RockyLinux_9
     archs: [x86_64]
   - name: Debian_13
     paths:
-      - project: openSUSE.org:Debian:13
+      - project: ${REMOTE_OBS_ORG_INTERCONNECT}Debian:13
         repository: standard
       - subproject: builddep
         repository: Debian_13
     archs: [x86_64]
   - name: xUbuntu_24.04
     paths:
-      - project: openSUSE.org:Ubuntu:24.04
+      - project: ${REMOTE_OBS_ORG_INTERCONNECT}Ubuntu:24.04
         repository: universe
       - subproject: builddep
         repository: xUbuntu_24.04
