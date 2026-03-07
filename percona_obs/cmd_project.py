@@ -1,4 +1,3 @@
-import re
 import sys
 from pathlib import Path
 
@@ -6,29 +5,35 @@ import yaml
 
 from .common import (
     REPO_ROOT,
+    _BOLD,
+    _DIM,
     _PROFILES_DIR,
     _RED,
     _col,
-    _print_ok,
+    _ENV_VAR_RE,
+    _load_project_config_with_inheritance,
+    build_project_meta,
+    find_projects,
+    is_project,
     load_yaml,
     parse_env_overrides,
+    resolve_project_path,
+    _print_ok,
 )
 
-# ${VAR} tokens are only supported in these files
-_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _YAML_FILENAMES = {"project.yaml", "package.yaml"}
 _OBS_FILENAMES = {"_service", "_aggregate", "_link"}
 
 
-def _validate_subproject_refs() -> list[tuple[Path, str]]:
-    """Check all subproject: references in project.yaml files under REPO_ROOT.
+def _validate_subproject_refs(root: Path) -> list[tuple[Path, str]]:
+    """Check all subproject: references in project.yaml files under ``root``.
 
     Returns a list of (yaml_path, error_message) for each invalid reference.
     Only validates subproject: entries (relative to rootprj); project: entries
     reference external OBS projects and cannot be validated locally.
     """
     errors: list[tuple[Path, str]] = []
-    for yaml_path in sorted(REPO_ROOT.rglob("project.yaml")):
+    for yaml_path in sorted(root.rglob("project.yaml")):
         config = load_yaml(yaml_path)
         for repo in config.get("repositories", []):
             for path_info in repo.get("paths", []):
@@ -49,9 +54,9 @@ def _validate_subproject_refs() -> list[tuple[Path, str]]:
     return errors
 
 
-def _find_env_var_usages() -> dict[str, list[tuple[Path, int]]]:
+def _find_env_var_usages(root: Path) -> dict[str, list[tuple[Path, int]]]:
     """Scan project.yaml, package.yaml, and obs/{_service,_aggregate,_link} files
-    for ${VAR} tokens.
+    under ``root`` for ${VAR} tokens.
 
     Returns a dict mapping variable name → list of (file_path, line_no).
     """
@@ -64,19 +69,20 @@ def _find_env_var_usages() -> dict[str, list[tuple[Path, int]]]:
                     usages.setdefault(m.group(1), []).append((file_path, lineno))
 
     for name in sorted(_YAML_FILENAMES):
-        for fp in sorted(REPO_ROOT.rglob(name)):
+        for fp in sorted(root.rglob(name)):
             _scan(fp)
     for name in sorted(_OBS_FILENAMES):
-        for fp in sorted(REPO_ROOT.rglob(f"obs/{name}")):
+        for fp in sorted(root.rglob(f"obs/{name}")):
             _scan(fp)
 
     return usages
 
 
 def _validate_env_vars(
+    root: Path,
     env_vars: dict[str, str] | None,
 ) -> list[tuple[Path, int, str, str]]:
-    """Check that every ${VAR} token is resolvable.
+    """Check that every ${VAR} token under ``root`` is resolvable.
 
     ``env_vars`` is the merged dict of profile env + CLI overrides.  Pass
     ``None`` when no profile is active and no -e flags were given — every
@@ -85,7 +91,7 @@ def _validate_env_vars(
 
     Returns a list of (file_path, line_no, var_name, error_detail).
     """
-    usages = _find_env_var_usages()
+    usages = _find_env_var_usages(root)
     if not usages:
         return []
 
@@ -119,6 +125,19 @@ def _load_profile_env(profile_name: str) -> dict[str, str]:
 
 
 def cmd_project_verify(args) -> None:
+    # Resolve scan root from optional project scope argument.
+    if args.project:
+        scan_root = resolve_project_path(args.project)
+        if not scan_root.is_dir():
+            print(
+                f"error: project '{args.project}' not found "
+                f"(expected {scan_root.relative_to(REPO_ROOT.parent)})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        scan_root = REPO_ROOT
+
     # Build env_vars from -P profile (if any), then apply -e overrides.
     env_vars: dict[str, str] | None = None
     if args.profile:
@@ -127,8 +146,8 @@ def cmd_project_verify(args) -> None:
         overrides = parse_env_overrides(args.env_overrides)
         env_vars = {**(env_vars or {}), **overrides}
 
-    ref_errors = _validate_subproject_refs()
-    env_errors = _validate_env_vars(env_vars)
+    ref_errors = _validate_subproject_refs(scan_root)
+    env_errors = _validate_env_vars(scan_root, env_vars)
 
     for yaml_path, msg in ref_errors:
         rel = yaml_path.relative_to(REPO_ROOT.parent)
@@ -141,3 +160,57 @@ def cmd_project_verify(args) -> None:
     if ref_errors or env_errors:
         sys.exit(1)
     _print_ok("project verify: all checks passed")
+
+
+def cmd_project_config(args) -> None:
+    if not args.rootprj:
+        raise SystemExit(
+            "error: --rootprj is required for 'project config' "
+            "(supply -R/--rootprj or use -P/--profile)"
+        )
+
+    # Build env_vars (same precedence as all other commands).
+    # None means no substitution — ${VAR} tokens are shown as-is.
+    env_vars: dict[str, str] | None = None
+    if args.profile:
+        env_vars = _load_profile_env(args.profile)
+    if args.env_overrides:
+        overrides = parse_env_overrides(args.env_overrides)
+        env_vars = {**(env_vars or {}), **overrides}
+
+    # Resolve scope: a single project or the whole tree.
+    if args.project:
+        scope_path = resolve_project_path(args.project)
+        if not scope_path.is_dir():
+            raise SystemExit(
+                f"error: project '{args.project}' not found "
+                f"(expected {scope_path.relative_to(REPO_ROOT.parent)})"
+            )
+        if not is_project(scope_path):
+            raise SystemExit(f"error: '{args.project}' is a package, not a project")
+        scope_obs_name = f"{args.rootprj}:{args.project}"
+        projects = list(find_projects(scope_path, scope_obs_name))
+    else:
+        root_config = load_yaml(REPO_ROOT / "project.yaml")
+        root_obs_name = root_config.get("name") or args.rootprj
+        projects = list(find_projects(REPO_ROOT, root_obs_name))
+
+    sep = _col(_DIM, "─" * 60)
+    for obs_project_name, project_path in projects:
+        project_config = _load_project_config_with_inheritance(project_path, env_vars)
+        meta = build_project_meta(
+            obs_project_name,
+            project_config.get("title", ""),
+            project_config.get("description", ""),
+            project_config.get("repositories", []),
+            args.rootprj,
+        )
+        project_config_str = (project_config.get("project-config") or "").strip()
+
+        print(sep)
+        print(_col(_BOLD, f"project meta  {obs_project_name}"))
+        print(meta)
+        print()
+        print(_col(_BOLD, f"project config  {obs_project_name}"))
+        print(project_config_str if project_config_str else _col(_DIM, "(empty)"))
+        print()

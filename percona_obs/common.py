@@ -2,6 +2,7 @@ import contextlib
 import io
 import logging
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -135,12 +136,52 @@ def find_packages(project_path: Path, obs_project: str, recursive: bool = True):
             yield from find_packages(child, f"{obs_project}:{child.name}")
 
 
+_ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
 def load_yaml(path: Path) -> dict:
     """Load a YAML file and return its contents, or an empty dict if the file does not exist."""
     if not path.exists():
         return {}
     with path.open() as f:
         return yaml.safe_load(f) or {}
+
+
+def load_yaml_with_env(path: Path, env_vars: dict[str, str] | None) -> dict:
+    """Load a YAML file with optional ${VAR} substitution before parsing.
+
+    If ``env_vars`` is None or empty, behaves identically to ``load_yaml``.
+    Raises ``SystemExit`` if the file contains an unresolvable ``${VAR}`` token.
+    """
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as f:
+        text = f.read()
+    if env_vars:
+        text = apply_env_substitution(text, env_vars, source=path)
+    return yaml.safe_load(text) or {}
+
+
+def apply_env_substitution(
+    text: str, env_vars: dict[str, str], source: Path | None = None
+) -> str:
+    """Replace every ``${VAR}`` token in *text* with the value from *env_vars*.
+
+    Raises ``SystemExit`` if any token has no corresponding entry in *env_vars*.
+    *source* is used only for the error message.
+    """
+
+    def _replace(m: re.Match) -> str:
+        var = m.group(1)
+        if var not in env_vars:
+            loc = f"{source}: " if source else ""
+            raise SystemExit(
+                f"error: {loc}undefined variable ${{{var}}} — "
+                "define it with -e or in the active profile"
+            )
+        return env_vars[var]
+
+    return _ENV_VAR_RE.sub(_replace, text)
 
 
 def _ancestor_projects(obs_project_name: str, rootprj: str) -> list[str]:
@@ -248,7 +289,10 @@ def find_projects(path: Path, obs_project: str):
             yield from find_projects(child, f"{obs_project}:{child.name}")
 
 
-def _load_project_config_with_inheritance(project_path: Path) -> dict:
+def _load_project_config_with_inheritance(
+    project_path: Path,
+    env_vars: dict[str, str] | None = None,
+) -> dict:
     """Load project.yaml, inheriting repositories and project-config from ancestors.
 
     Walks up the directory tree from project_path to REPO_ROOT. For each of
@@ -257,14 +301,17 @@ def _load_project_config_with_inheritance(project_path: Path) -> dict:
     defines it is used.
 
     'title', 'description', and 'name' are never inherited.
+
+    If *env_vars* is provided, ``${VAR}`` tokens in every loaded file are
+    substituted before YAML parsing.
     """
-    config = load_yaml(project_path / "project.yaml")
+    config = load_yaml_with_env(project_path / "project.yaml", env_vars)
 
     # Collect ancestor configs from nearest parent up to (and including) REPO_ROOT
     ancestor_configs: list[dict] = []
     path = project_path.parent
     while True:
-        ancestor_configs.append(load_yaml(path / "project.yaml"))
+        ancestor_configs.append(load_yaml_with_env(path / "project.yaml", env_vars))
         if path == REPO_ROOT:
             break
         if not path.is_relative_to(REPO_ROOT):

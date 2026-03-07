@@ -231,7 +231,7 @@ def cmd_sync(args):
         sys.exit(1)
 
     # Validate local project configuration before making any API calls.
-    ref_errors = _validate_subproject_refs()
+    ref_errors = _validate_subproject_refs(REPO_ROOT)
     if ref_errors:
         for yaml_path, msg in ref_errors:
             rel = yaml_path.relative_to(REPO_ROOT.parent)

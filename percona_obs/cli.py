@@ -12,7 +12,7 @@ from .cmd_profile import (
     cmd_profile_create,
     cmd_profile_list,
 )
-from .cmd_project import cmd_project_verify
+from .cmd_project import cmd_project_config, cmd_project_verify
 from .cmd_sync import cmd_sync, cmd_sync_delete, cmd_sync_promote
 from .common import _DIM, _col, logger
 
@@ -322,7 +322,27 @@ def build_parser() -> argparse.ArgumentParser:
         "verify",
         help="Validate local project configuration (subproject: references, env variable usage).",
     )
+    project_verify_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Restrict validation to this subproject (colon notation, e.g. ppg:17.9). "
+        "If omitted, the entire root/ tree is validated.",
+    )
     project_verify_parser.set_defaults(func=cmd_project_verify)
+
+    project_config_parser = project_subparsers.add_parser(
+        "config",
+        help="Show the project meta XML and build config that would be sent to OBS.",
+    )
+    project_config_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Restrict output to this subproject and its children (colon notation, e.g. ppg:17.9). "
+        "If omitted, all projects under root/ are shown.",
+    )
+    project_config_parser.set_defaults(func=cmd_project_config)
 
     return parser
 

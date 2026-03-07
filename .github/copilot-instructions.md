@@ -461,13 +461,15 @@ For multibuild packages, when all flavors of a repository share the same status 
 
 When multiple architectures are configured for the same repository, the highest-priority (most actionable) status is kept per flavor; arch details are not shown.
 
-### `project verify [-P <profile>] [-e KEY:VALUE ...]`
+### `project verify [project] [-P <profile>] [-e KEY:VALUE ...]`
 
 Validates local project configuration without connecting to OBS.
 
-**Check 1 — subproject references**: every `subproject:` entry in all `project.yaml` files must resolve to an existing directory under `root/`.
+The optional `project` argument (colon notation, e.g. `ppg:17.9`) restricts validation to that subtree. If omitted, the entire `root/` tree is validated.
 
-**Check 2 — env variable coverage**: every `${VAR}` token found in `project.yaml`, `package.yaml`, and `obs/_service` / `obs/_aggregate` / `obs/_link` files must be defined in the active env.
+**Check 1 — subproject references**: every `subproject:` entry in all `project.yaml` files within the scope must resolve to an existing directory under `root/`.
+
+**Check 2 — env variable coverage**: every `${VAR}` token found in `project.yaml`, `package.yaml`, and `obs/_service` / `obs/_aggregate` / `obs/_link` files within the scope must be defined in the active env.
 
 Env resolution for the check (same precedence as all other commands):
 - Profile env (`-P <profile>`) provides the base values.
@@ -475,8 +477,11 @@ Env resolution for the check (same precedence as all other commands):
 - With no profile and no `-e` flags, any `${VAR}` token found is an error with a hint to supply a profile.
 
 ```sh
-# Check against the dev profile
+# Validate the entire tree against the dev profile
 ./percona-obs -P dev project verify
+
+# Validate only the ppg:17.9 subproject
+./percona-obs -P dev project verify ppg:17.9
 
 # Check with an inline override (no profile file needed)
 ./percona-obs -e REMOTE_OBS_ORG_INTERCONNECT:'openSUSE.org:' project verify
