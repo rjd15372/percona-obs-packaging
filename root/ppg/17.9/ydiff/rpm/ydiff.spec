@@ -25,7 +25,7 @@
 %global        python3_pkgversion 313
 %endif
 %{expand: %%global py3ver %(echo `%{__ospython} -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" `)}
-%global python3_sitelib %(%{__ospython} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
+%global python3_sitelib %(%{__ospython} -Esc "import sysconfig; print(sysconfig.get_path('purelib', vars={'platbase': '/usr', 'base': '%{_prefix}'}))")
 
 Name:           ydiff
 Version:        1.0.0
@@ -35,6 +35,7 @@ URL:            https://github.com/ymattw/ydiff
 License:        BSD
 Source0:        %{name}-%{version}.tar.gz
 BuildRequires:  python%{python3_pkgversion}-devel
+BuildRequires:  python%{python3_pkgversion}-setuptools
 Requires:       less
 Requires:       python%{python3_pkgversion}-%{name}
 
