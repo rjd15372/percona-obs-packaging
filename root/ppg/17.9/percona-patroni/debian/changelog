@@ -1,47 +1,5 @@
-patroni (1.6.3-1) UNRELEASED; urgency=low
+percona-patroni (4.1.0-1) unstable; urgency=low
 
-  * Upgrade version to 1.6.3
+  * Update to 4.1.0 version.
 
- -- Pavel Zhbanov <zpavlig[@]gmail[dot]com>  Wed, 22 Jan 2020 18:08:08 +0600
-
-patroni (1.6.0-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.6.0
-
- -- Julian Markwort <julian[dot]markwort[@]cybertec[dot]at>  Wed, 31 Jul 2019 15:57:54 +0200
-
-patroni (1.5.6-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.5.6
-
- -- Julian Markwort <julian[dot]markwort[@]cybertec[dot]at>  Wed, 31 Jul 2019 15:57:54 +0200
-
-patroni (1.5.5-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.5.5
-
- -- Anton Patsev <patsev[dot]anton[@]gmail[dot]com>  Mon, 1 Apr 2019 12:08:01 +0600
-
-patroni (1.4.3-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.4.3
-
- -- Ants Aasma <ants@cybertec.at>  Thu, 5 Apr 2018 23:40:01 +0300
-
-patroni (1.4.2-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.4.2
-
- -- Ants Aasma <ants@cybertec.at>  Thu, 8 Feb 2018 14:06:12 +0200
-
-patroni (1.3.2-1) UNRELEASED; urgency=low
-
-  * Upgrade version to 1.3.2
-
- -- Ants Aasma <ants@cybertec.at>  Sun, 6 Aug 2017 13:47:12 +0300
-
-patroni (1.2.5-1) UNRELEASED; urgency=low
-
-  * Initial release
-
- -- Ants Aasma <ants@cybertec.at>  Fri, 21 Apr 2017 15:12:33 +0000
+ -- Percona Development Team <info@percona.com>  Mon, 09 Mar 2026 00:00:00 +0000
