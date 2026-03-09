@@ -282,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
     build_status_parser.add_argument(
         "package", nargs="?", default=None, help=_build_package_help
     )
+    build_status_parser.add_argument(
+        "--repo",
+        metavar="NAME",
+        default=None,
+        help="Filter output to a specific repository name (e.g. RockyLinux_9).",
+    )
     build_status_parser.set_defaults(func=cmd_build_status)
 
     profile_parser = subparsers.add_parser(

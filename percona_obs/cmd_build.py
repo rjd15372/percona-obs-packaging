@@ -44,24 +44,28 @@ _STATUS_PRIORITY: dict[str, int] = {
 }
 
 
+_STATUS_WIDTH = max(len(s) for s in _STATUS_PRIORITY)
+
+
 def _status_indicator(code: str) -> str:
     """Return a colored symbol + status-code string for an OBS build status."""
+    padded = code.ljust(_STATUS_WIDTH)
     if code == "succeeded":
-        return f"{_col(_GREEN, '✔')} {_col(_GREEN, code)}"
+        return f"{_col(_GREEN, '✔')} {_col(_GREEN, padded)}"
     if code in ("failed", "unresolvable", "broken"):
-        return f"{_col(_RED, '✗')} {_col(_RED, code)}"
+        return f"{_col(_RED, '✗')} {_col(_RED, padded)}"
     if code in ("building", "dispatching"):
-        return f"{_col(_CYAN, '●')} {_col(_CYAN, code)}"
+        return f"{_col(_CYAN, '●')} {_col(_CYAN, padded)}"
     if code in ("scheduled", "blocked"):
-        return f"{_col(_YELLOW, '◌')} {_col(_YELLOW, code)}"
+        return f"{_col(_YELLOW, '◌')} {_col(_YELLOW, padded)}"
     if code in ("excluded", "disabled"):
-        return f"{_col(_DIM, '–')} {_col(_DIM, code)}"
-    return f"{_col(_DIM, '?')} {_col(_DIM, code)}"
+        return f"{_col(_DIM, '–')} {_col(_DIM, padded)}"
+    return f"{_col(_DIM, '?')} {_col(_DIM, padded)}"
 
 
 def _fetch_build_results(
     apiurl: str, obs_project_name: str
-) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, dict[str, str]]]:
+) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, dict[str, tuple[str, str]]]]:
     """Fetch build results for all packages in an OBS project.
 
     Returns (results, succeeded_archs) where:
@@ -70,9 +74,9 @@ def _fetch_build_results(
         - repository    -- OBS repository name (e.g. 'RockyLinux_9')
         - flavor        -- multibuild flavor string; '' for non-multibuild packages
         - status_code   -- e.g. 'succeeded', 'failed', 'building'
-      succeeded_archs: {base_package: {repository: arch}}
-        One representative arch per (package, repository) that has succeeded,
-        used to query build history for version information.
+      succeeded_archs: {base_package: {repository: (arch, flavor)}}
+        One representative (arch, flavor) per (package, repository) that has
+        succeeded, used to query build history for version information.
 
     When the same (package, repository, flavor) has results for multiple
     architectures, the highest-priority (most actionable) status is kept.
@@ -91,7 +95,7 @@ def _fetch_build_results(
         return {}, {}
 
     results: dict[str, dict[str, dict[str, str]]] = {}
-    succeeded_archs: dict[str, dict[str, str]] = {}
+    succeeded_archs: dict[str, dict[str, tuple[str, str]]] = {}
     for result_elem in result_root.findall("result"):
         repo = result_elem.get("repository", "")
         arch = result_elem.get("arch", "")
@@ -107,7 +111,9 @@ def _fetch_build_results(
             ):
                 repo_map[flavor] = code
             if code == "succeeded":
-                succeeded_archs.setdefault(base_pkg, {}).setdefault(repo, arch)
+                succeeded_archs.setdefault(base_pkg, {}).setdefault(
+                    repo, (arch, flavor)
+                )
 
     for pkg_repos in results.values():
         for flavor_map in pkg_repos.values():
@@ -160,9 +166,11 @@ def _print_pkg_repos(
     repo_results: dict[str, dict[str, str]],
     prefix: str,
     versions: dict[str, str] | None = None,
+    repo_filter: str | None = None,
+    hide_tag: bool = False,
 ) -> None:
     """Print per-repo (and per-flavor) build status lines for a single package."""
-    repos = sorted(repo_results)
+    repos = sorted(r for r in repo_results if repo_filter is None or r == repo_filter)
     if not repos:
         print(f"{prefix}└── {_col(_DIM, '─ not in OBS')}")
         return
@@ -176,10 +184,13 @@ def _print_pkg_repos(
         if len(unique_codes) == 1:
             code = next(iter(unique_codes))
             tag = ""
-            if all_flavors and all_flavors[0][0]:
+            if not hide_tag and all_flavors and all_flavors[0][0]:
                 tags = " ".join(f"[:{f}]" for f, _ in all_flavors)
                 tag = f"  {_col(_DIM, tags)}"
-            print(f"{prefix}{repo_conn}{repo:<22} {_status_indicator(code)}{tag}{ver}")
+            repo_width = max(1, 26 - len(prefix))
+            print(
+                f"{prefix}{repo_conn}{repo:<{repo_width}} {_status_indicator(code)}{tag}{ver}"
+            )
         else:
             # Flavors have different statuses — expand each as its own sub-line.
             print(f"{prefix}{repo_conn}{repo}")
@@ -198,6 +209,7 @@ def _print_project_tree(
     prefix: str,
     is_last: bool,
     is_root: bool = False,
+    repo_filter: str | None = None,
 ) -> None:
     """Recursively print the project / package tree with build status lines."""
     config = load_yaml(path / "project.yaml")
@@ -242,14 +254,32 @@ def _print_project_tree(
                 all_versions,
                 child_prefix,
                 child_is_last,
+                repo_filter=repo_filter,
             )
         else:
             pkg_name = child.name
             pkg_conn = "└── " if child_is_last else "├── "
-            print(f"{child_prefix}{pkg_conn}{pkg_name}")
             repo_results = all_results.get(obs_name, {}).get(pkg_name, {})
             pkg_versions = all_versions.get(obs_name, {}).get(pkg_name)
-            _print_pkg_repos(repo_results, pkg_prefix, pkg_versions)
+            # If all visible repos share the same single flavor, promote it to
+            # a package-name suffix (e.g. "percona-pg-telemetry:17") and hide
+            # the redundant [:flavor] tags on each repo line.
+            visible = {
+                r: fm
+                for r, fm in repo_results.items()
+                if repo_filter is None or r == repo_filter
+            }
+            flavor_suffix = ""
+            if visible and all(len(fm) == 1 for fm in visible.values()):
+                unique_flavors = {next(iter(fm)) for fm in visible.values()}
+                if len(unique_flavors) == 1:
+                    f = next(iter(unique_flavors))
+                    if f:
+                        flavor_suffix = f":{f}"
+            print(f"{child_prefix}{pkg_conn}{pkg_name}{flavor_suffix}")
+            _print_pkg_repos(
+                repo_results, pkg_prefix, pkg_versions, repo_filter, bool(flavor_suffix)
+            )
 
 
 def cmd_build_trigger(args):
@@ -299,7 +329,7 @@ def cmd_build_status(args):
 
     # Fetch build results per OBS project.
     all_results: dict[str, dict[str, dict[str, dict[str, str]]]] = {}
-    all_succeeded_archs: dict[str, dict[str, dict[str, str]]] = {}
+    all_succeeded_archs: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
     for obs_name in unique_obs_projects:
         logger.debug(f"fetching build results: {obs_name}")
         results, succeeded_archs = _fetch_build_results(apiurl, obs_name)
@@ -310,8 +340,9 @@ def cmd_build_status(args):
     all_versions: dict[str, dict[str, dict[str, str]]] = {}
     for obs_name, pkg_archs in all_succeeded_archs.items():
         for pkg, repo_archs in pkg_archs.items():
-            for repo, arch in repo_archs.items():
-                versrel = _fetch_pkg_versrel(apiurl, obs_name, repo, arch, pkg)
+            for repo, (arch, flavor) in repo_archs.items():
+                full_pkg = f"{pkg}:{flavor}" if flavor else pkg
+                versrel = _fetch_pkg_versrel(apiurl, obs_name, repo, arch, full_pkg)
                 if versrel:
                     all_versions.setdefault(obs_name, {}).setdefault(pkg, {})[
                         repo
@@ -340,4 +371,5 @@ def cmd_build_status(args):
         "",
         False,
         is_root=True,
+        repo_filter=getattr(args, "repo", None),
     )
