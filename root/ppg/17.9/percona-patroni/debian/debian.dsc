@@ -1,5 +1,6 @@
 Format: 3.0 (quilt)
 Source: percona-patroni
+Binary: percona-patroni, percona-patroni-doc
 Architecture: all
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
