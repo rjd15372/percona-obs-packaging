@@ -388,14 +388,15 @@ its services and rebuild explicitly:
 ./percona-obs -P dev build trigger ppg:17.9 <pkg>
 ```
 
-### 8f. Merge to `main` when all targets succeed
+### 8f. Prepare the branch for merging when all targets succeed
 
 Once every target shows `✔ succeeded`:
 
 1. Switch the `obs/_service` `revision` entries back to `main`.
-2. Commit, push to the feature branch.
-3. Open a PR and merge into `main`.
-4. Run `sync push` one final time from `main` to update OBS.
+2. Commit and push to the feature branch.
+
+**Do NOT merge the feature branch into `main` yourself.** Leave the branch open
+and let the repository owner handle the merge manually.
 
 ---
 
