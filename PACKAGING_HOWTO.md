@@ -439,3 +439,38 @@ Once every target shows `✔ succeeded`:
 - **`python3-setuptools` must be in `BuildRequires` for `setup.py`-based packages.**
   Python 3.12 no longer bundles `setuptools`. Add
   `BuildRequires: python%{python3_pkgversion}-setuptools` explicitly.
+- **`Release:` field must be hardcoded in the spec.** The upstream postgres-packaging
+  specs often use `Release: %{release}%{?dist}` which expands to nothing under OBS
+  (the `%{release}` macro is undefined). Use a hardcoded value like `Release: 1%{?dist}`.
+- **`obs_scm` `filename` param must match the spec's `Source0` stem.** If the upstream
+  git repo is named differently from the package (e.g. repo `patroni` but spec
+  `Source0: percona-patroni-%{version}.tar.gz`), set
+  `<param name="filename">percona-patroni</param>` so OBS names the tarball correctly.
+  Without this OBS produces `patroni-4.1.0.tar.gz` while the spec expects
+  `percona-patroni-4.1.0.tar.gz`, failing with "No such file or directory".
+- **`debian.dsc` must have a `Binary:` field.** debtransform requires it to know which
+  binary packages are produced. Copy the space-separated list of all binary package
+  names from `debian/control`.
+- **`debian/changelog` source name must match `debian/control`'s `Source:` field.**
+  If they differ (e.g. `patroni` vs `percona-patroni`), dpkg-source will fail with
+  "source package has two conflicting values". Always use the Percona package name in
+  both files.
+- **Sphinx docs extensions unavailable in OBS build environments.** If the package
+  builds Sphinx documentation that uses non-standard extensions (like
+  `sphinx_github_style`), those extensions may not be in the OBS build environment.
+  The upstream builder typically works around this with a `sed` substitution at CI
+  time. In OBS, apply the same change as a proper quilt patch:
+  1. Create `debian/patches/<name>.patch` with the correct diff (use `patch --fuzz=0`
+     to verify it applies cleanly — RPM builds use `--fuzz=0`).
+  2. Add the patch name to `debian/patches/series`.
+  3. Copy the same `.patch` file into `rpm/` so it lands in RPM's SOURCES directory.
+  4. Declare it in the spec: `Patch0: <name>.patch` (after `Source*` lines) and
+     apply it in `%prep`: `%patch0 -p1`.
+- **Patch hunk headers must be exact for RPM builds.** RPM's `%patch` macro passes
+  `--fuzz=0` to `patch`. If the hunk offset or line count in `@@ -N,M +N,M @@` is
+  wrong the patch will fail even if it applied with fuzz on the command line. Always
+  test locally with `patch --dry-run --fuzz=0 -p1 < file.patch` before committing.
+- **Only include files in `rpm/` that are actually referenced by the spec.** Extra
+  `.tar.gz` files in `rpm/` get extracted into OBS SOURCES and confuse debtransform,
+  which will fail with "too many files looking like a usable source tarball". Remove
+  any legacy artifacts not referenced by the current spec.
