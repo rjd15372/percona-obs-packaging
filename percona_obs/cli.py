@@ -329,6 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict validation to this subproject (colon notation, e.g. ppg:17.9). "
         "If omitted, the entire root/ tree is validated.",
     )
+    project_verify_parser.add_argument(
+        "package",
+        nargs="?",
+        default=None,
+        help="Restrict validation to this package within the project. Requires project.",
+    )
     project_verify_parser.set_defaults(func=cmd_project_verify)
 
     project_config_parser = project_subparsers.add_parser(

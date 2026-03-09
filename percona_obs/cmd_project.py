@@ -1,4 +1,5 @@
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,7 @@ from .common import (
     resolve_project_path,
     _print_ok,
 )
+from .services import _git_head_sha
 
 _YAML_FILENAMES = {"project.yaml", "package.yaml"}
 _OBS_FILENAMES = {"_service", "_aggregate", "_link"}
@@ -109,6 +111,57 @@ def _validate_env_vars(
     return errors
 
 
+def _validate_obs_scm_revisions(
+    service_files: list[Path],
+) -> list[tuple[Path, str, str]]:
+    """Check that every obs_scm revision in the given _service files exists remotely.
+
+    Deduplicates by (url, revision) so shared repos only trigger one network call.
+
+    Returns a list of (service_file, url, revision) for unresolvable revisions.
+    """
+    # Collect all (url, revision) pairs with the first service file that uses them.
+    seen: dict[tuple[str, str], Path] = {}
+    for svc_file in service_files:
+        try:
+            root = ET.parse(svc_file).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        for svc in root.findall("service"):
+            if svc.get("name") != "obs_scm":
+                continue
+            url = next(
+                (
+                    (p.text or "").strip()
+                    for p in svc.findall("param")
+                    if p.get("name") == "url"
+                ),
+                "",
+            )
+            revision = next(
+                (
+                    (p.text or "").strip()
+                    for p in svc.findall("param")
+                    if p.get("name") == "revision"
+                ),
+                "HEAD",
+            )
+            if not url:
+                continue
+            key = (url, revision)
+            if key not in seen:
+                seen[key] = svc_file
+
+    errors: list[tuple[Path, str, str]] = []
+    for (url, revision), svc_file in seen.items():
+        if revision.upper() == "HEAD":
+            continue  # HEAD always resolves; skip the network call
+        sha = _git_head_sha(url, revision)
+        if sha is None:
+            errors.append((svc_file, url, revision))
+    return errors
+
+
 def _load_profile_env(profile_name: str) -> dict[str, str]:
     """Return the env dict from .profile/<profile_name>.yaml, or exit on error."""
     profile_path = _PROFILES_DIR / f"{profile_name}.yaml"
@@ -125,7 +178,7 @@ def _load_profile_env(profile_name: str) -> dict[str, str]:
 
 
 def cmd_project_verify(args) -> None:
-    # Resolve scan root from optional project scope argument.
+    # Resolve scan root from optional project/package scope arguments.
     if args.project:
         scan_root = resolve_project_path(args.project)
         if not scan_root.is_dir():
@@ -135,7 +188,21 @@ def cmd_project_verify(args) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        if getattr(args, "package", None):
+            scan_root = scan_root / args.package
+            if not scan_root.is_dir():
+                print(
+                    f"error: package '{args.package}' not found under '{args.project}'",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
     else:
+        if getattr(args, "package", None):
+            print(
+                "error: a project argument is required when specifying a package",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         scan_root = REPO_ROOT
 
     # Build env_vars from -P profile (if any), then apply -e overrides.
@@ -148,6 +215,8 @@ def cmd_project_verify(args) -> None:
 
     ref_errors = _validate_subproject_refs(scan_root)
     env_errors = _validate_env_vars(scan_root, env_vars)
+    service_files = sorted(scan_root.rglob("obs/_service"))
+    scm_errors = _validate_obs_scm_revisions(service_files)
 
     for yaml_path, msg in ref_errors:
         rel = yaml_path.relative_to(REPO_ROOT.parent)
@@ -157,7 +226,14 @@ def cmd_project_verify(args) -> None:
         rel = file_path.relative_to(REPO_ROOT.parent)
         print(f"error: {rel}:{lineno}: ${{{var_name}}}: {detail}", file=sys.stderr)
 
-    if ref_errors or env_errors:
+    for svc_file, url, revision in scm_errors:
+        rel = svc_file.relative_to(REPO_ROOT.parent)
+        print(
+            f"error: {rel}: obs_scm revision '{revision}' not found in {url}",
+            file=sys.stderr,
+        )
+
+    if ref_errors or env_errors or scm_errors:
         sys.exit(1)
     _print_ok("project verify: all checks passed")
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import osc.conf
 
 from .cmd_profile import _load_profile
-from .cmd_project import _validate_subproject_refs
+from .cmd_project import _validate_obs_scm_revisions, _validate_subproject_refs
 from .common import (
     REPO_ROOT,
     _build_aggregate_xml,
@@ -257,6 +257,23 @@ def cmd_sync(args):
     if not args.dirty:
         _check_git_clean()
     targets = _resolve_targets(args)
+
+    # Validate obs_scm revisions for the resolved targets before any API calls.
+    scm_service_files = sorted(
+        pkg_path / "obs" / "_service"
+        for _, pkg_path in targets
+        if (pkg_path / "obs" / "_service").is_file()
+    )
+    scm_errors = _validate_obs_scm_revisions(scm_service_files)
+    if scm_errors:
+        for svc_file, url, revision in scm_errors:
+            rel = svc_file.relative_to(REPO_ROOT.parent)
+            print(
+                f"error: {rel}: obs_scm revision '{revision}' not found in {url}",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
     apiurl = osc.conf.config["apiurl"]
 
     # Build env_vars from profile env + -e overrides (already merged by main()).
