@@ -174,62 +174,75 @@ def _fetch_obs_subproject_names(apiurl: str, rootprj: str) -> set[str]:
         return set()
 
 
-def _fetch_builddepinfo(apiurl: str, obs_project: str) -> dict[str, set[str]]:
-    """Return a reverse build-dependency map for an OBS project.
+def _fetch_combined_depinfo(
+    apiurl: str, branch_projects: set[str], local_pkg_names: set[str]
+) -> dict[str, set[str]]:
+    """Return a forward build-dependency map across multiple OBS branch projects.
 
-    Returns {source_pkg: set_of_source_pkgs_that_depend_on_it}.
+    Queries _builddepinfo for each project in branch_projects, merges the
+    provided_by maps (binary → source package), then builds a forward dep map:
+    fwd_deps[A] = set of source packages that A build-depends on, filtered to
+    packages whose names appear in local_pkg_names.
 
-    Queries _builddepinfo for the first available repository and architecture.
-    Returns {} if the project has no build results yet or on any error.
+    Because OBS _builddepinfo for a project includes packages inherited via
+    <path> entries, querying branch projects gives the full cross-project dep
+    graph.  Returns {} if no project has build results yet or on any error.
     """
-    try:
-        # List repositories in the project.
-        repo_url = osc.core.makeurl(apiurl, ["build", obs_project])
-        repo_root = ET.fromstring(osc.connection.http_GET(repo_url).read())
-        repos = [e.get("name", "") for e in repo_root.findall("entry") if e.get("name")]
-        if not repos:
-            return {}
+    # Collect provided_by and all <package> elements from all branch projects.
+    provided_by: dict[str, str] = {}  # binary_name → source_pkg
+    all_pkg_elems: list[tuple[ET.Element, str]] = []
 
-        # List architectures for the first repository.
-        arch_url = osc.core.makeurl(apiurl, ["build", obs_project, repos[0]])
-        arch_root = ET.fromstring(osc.connection.http_GET(arch_url).read())
-        archs = [e.get("name", "") for e in arch_root.findall("entry") if e.get("name")]
-        if not archs:
-            return {}
-
-        # Fetch _builddepinfo for the first repo/arch combination.
-        dep_url = osc.core.makeurl(
-            apiurl, ["build", obs_project, repos[0], archs[0], "_builddepinfo"]
-        )
-        dep_root = ET.fromstring(osc.connection.http_GET(dep_url).read())
-    except Exception:
-        return {}
-
-    # Build provided_by: {binary_name -> source_pkg} from <subpkg> elements.
-    provided_by: dict[str, str] = {}
-    for pkg_elem in dep_root.findall("package"):
-        src = pkg_elem.get("name", "")
-        if not src:
+    for obs_project in branch_projects:
+        try:
+            repo_url = osc.core.makeurl(apiurl, ["build", obs_project])
+            repo_root = ET.fromstring(osc.connection.http_GET(repo_url).read())
+            repos = [
+                e.get("name", "") for e in repo_root.findall("entry") if e.get("name")
+            ]
+            if not repos:
+                continue
+            arch_url = osc.core.makeurl(apiurl, ["build", obs_project, repos[0]])
+            arch_root = ET.fromstring(osc.connection.http_GET(arch_url).read())
+            archs = [
+                e.get("name", "") for e in arch_root.findall("entry") if e.get("name")
+            ]
+            if not archs:
+                continue
+            dep_url = osc.core.makeurl(
+                apiurl, ["build", obs_project, repos[0], archs[0], "_builddepinfo"]
+            )
+            dep_root = ET.fromstring(osc.connection.http_GET(dep_url).read())
+        except Exception as exc:
+            logger.debug(
+                f"_fetch_combined_depinfo: error fetching {obs_project}: {exc}"
+            )
             continue
-        for subpkg in pkg_elem.findall("subpkg"):
-            binary = (subpkg.text or "").strip()
-            if binary:
-                provided_by[binary] = src
 
-    # Build reverse dep map: for each <pkgdep> in source S, if that binary is
-    # provided by source A (A != S), then S depends on A -> reverse: A -> {S}.
-    reverse_deps: dict[str, set[str]] = {}
-    for pkg_elem in dep_root.findall("package"):
-        src = pkg_elem.get("name", "")
+        for pkg_elem in dep_root.findall("package"):
+            raw_src = pkg_elem.get("name", "")
+            if not raw_src:
+                continue
+            # Strip multibuild flavor suffix (e.g. "pkg:flavor" → "pkg") so
+            # that dep lookups always use the base package name.
+            src = raw_src.split(":")[0]
+            all_pkg_elems.append((pkg_elem, src))
+            for subpkg in pkg_elem.findall("subpkg"):
+                binary = (subpkg.text or "").strip()
+                if binary:
+                    provided_by[binary] = src
+
+    # Build forward dep map: fwd_deps[A] = {local packages A depends on}.
+    fwd_deps: dict[str, set[str]] = {}
+    for pkg_elem, src in all_pkg_elems:
         if not src:
             continue
         for pkgdep in pkg_elem.findall("pkgdep"):
             binary = (pkgdep.text or "").strip()
             provider = provided_by.get(binary)
-            if provider and provider != src:
-                reverse_deps.setdefault(provider, set()).add(src)
+            if provider and provider != src and provider in local_pkg_names:
+                fwd_deps.setdefault(src, set()).add(provider)
 
-    return reverse_deps
+    return fwd_deps
 
 
 def _create_project_skeleton(
@@ -433,7 +446,10 @@ def _edit_project_meta(
                 err_code = ET.fromstring(err_body).get("code", "")
             except ET.ParseError:
                 pass
-        if not force and err_code in ("repository_access_failure", "project_save_error"):
+        if not force and err_code in (
+            "repository_access_failure",
+            "project_save_error",
+        ):
             # OBS rejects the meta because a referenced project doesn't have
             # its repositories configured yet.  Strip <path> elements and
             # retry so OBS accepts the skeleton; a second Stage-2 pass will

@@ -17,6 +17,7 @@ from .cmd_project import (
 from .common import (
     REPO_ROOT,
     _build_aggregate_xml,
+    _print_action,
     _print_aggregate,
     _print_ok,
     _print_remove,
@@ -41,7 +42,7 @@ from .obs_api import (
     _create_project_skeleton,
     _delete_obs_package,
     _delete_obs_project,
-    _fetch_builddepinfo,
+    _fetch_combined_depinfo,
     _fetch_obs_file_content,
     _fetch_obs_file_md5s,
     _fetch_obs_package_latest_comment,
@@ -236,39 +237,19 @@ def _resolve_branch_decision(
     return not changed
 
 
-def _collect_dep_promotes(
-    apiurl: str,
-    obs_project_name: str,
-    changed_pkgs: set[str],
-    reverse_deps: dict[str, set[str]],
-    already_in_scope: set[str],
-) -> set[str]:
-    """Return packages that must be promoted due to a build dep on changed_pkgs.
+def _compute_branch_project(
+    obs_project_name: str, rootprj: str, branch_rootprj: str
+) -> str:
+    """Return the branch project name that corresponds to obs_project_name.
 
-    Performs a BFS over reverse_deps starting from changed_pkgs.  For each
-    reachable package that is not already being promoted (already_in_scope),
-    checks whether it is currently a branch aggregate in obs_project_name.
-    Packages that are aggregates are added to the result set; traversal
-    continues through them so their own dependents are also checked.
-
-    Uses a visited set so cycles (impossible in practice) cannot loop forever.
+    Substitutes the branch rootprj prefix for the current rootprj prefix.
+    If obs_project_name does not match rootprj (unexpected), returns it unchanged.
     """
-    result: set[str] = set()
-    visited: set[str] = set(already_in_scope)
-    queue: list[str] = list(changed_pkgs)
-    while queue:
-        src = queue.pop()
-        for dependent in reverse_deps.get(src, set()):
-            if dependent in visited:
-                continue
-            visited.add(dependent)
-            comment = _fetch_obs_package_latest_comment(
-                apiurl, obs_project_name, dependent
-            )
-            if comment and _BRANCH_MSG_RE.match(comment):
-                result.add(dependent)
-                queue.append(dependent)
-    return result
+    if obs_project_name == rootprj:
+        return branch_rootprj
+    if obs_project_name.startswith(rootprj + ":"):
+        return branch_rootprj + obs_project_name[len(rootprj) :]
+    return obs_project_name
 
 
 def cmd_sync(args):
@@ -333,27 +314,18 @@ def cmd_sync(args):
             print(f"error: {rel}: {msg}", file=sys.stderr)
         sys.exit(1)
 
-    # Resolve --branch-from profile (same OBS instance, different root project).
+    # Resolve --branch-from profile.
+    branch_apiurl: str = apiurl  # defaults to the target OBS instance
     branch_rootprj: str | None = None
     if args.branch_from:
         branch_profile = _load_profile(args.branch_from)
-        branch_apiurl = branch_profile.get("apiurl", "")
+        _raw_branch_apiurl = branch_profile.get("apiurl", "")
+        if _raw_branch_apiurl:
+            branch_apiurl = _raw_branch_apiurl
         branch_rootprj = branch_profile.get("rootprj", "")
-        if branch_apiurl and branch_apiurl.rstrip("/") != apiurl.rstrip("/"):
-            print(
-                f"error: --branch-from profile '{args.branch_from}' uses a different "
-                f"OBS instance ({branch_apiurl}) than the current profile ({apiurl}). "
-                "Cross-instance branching is not supported.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
     seen_projects: set = set()
     local_project_names: set[str] = set()
     local_packages_by_project: dict[str, set[str]] = {}
-    # Tracks packages uploaded with full sources (not aggregated), per OBS project.
-    full_uploaded_by_project: dict[str, set[str]] = {}
-    # Maps obs_project_name -> local project directory path, for dep promotion lookups.
-    project_local_path: dict[str, Path] = {}
     dry_run_obs = args.dry_run or args.dry_run_remote
 
     # Pre-pass: two-stage project creation to handle OBS path-reference cycles.
@@ -422,6 +394,149 @@ def cmd_sync(args):
         _print_ok(f"sync successful{suffix}")
         return
 
+    # --- Phase 1: compute branch/promote decisions upfront ---
+    # decisions[(obs_project_name, pkg_name)]:
+    #   "aggregate"   — upload _aggregate pointing to branch_project_for[key]
+    #   "skip_branch" — leave existing aggregate on OBS unchanged (no upload)
+    #   "promote"     — upload full obs/ sources
+    decisions: dict[tuple[str, str], str] = {}
+    branch_project_for: dict[tuple[str, str], str] = {}
+    # pkg_key_by_name[(pkg_name)] → key, used for dep propagation lookups.
+    pkg_key_by_name: dict[str, tuple[str, str]] = {}
+
+    _print_action("planning: checking sync decisions")
+    for obs_project, package_path in targets:
+        obs_dir = package_path / "obs"
+        if not obs_dir.is_dir():
+            continue
+        project_path = package_path.parent
+        project_config = load_yaml(project_path / "project.yaml")
+        obs_project_name = project_config.get("name") or obs_project
+        key: tuple[str, str] = (obs_project_name, package_path.name)
+        pkg_key_by_name[package_path.name] = key
+
+        if branch_rootprj:
+            branch_project = _compute_branch_project(
+                obs_project_name, args.rootprj, branch_rootprj
+            )
+            use_aggregate = _resolve_branch_decision(
+                apiurl, branch_project, package_path.name, package_path
+            )
+            if use_aggregate:
+                decisions[key] = "aggregate"
+                branch_project_for[key] = branch_project
+            else:
+                decisions[key] = "promote"
+        else:
+            # Without --branch-from the package may still hold a _aggregate from
+            # a prior --branch-from sync.  Check whether content still matches.
+            prior_comment = _fetch_obs_package_latest_comment(
+                apiurl, obs_project_name, package_path.name
+            )
+            if prior_comment:
+                bm = _BRANCH_MSG_RE.match(prior_comment)
+                if bm:
+                    src_proj = bm.group(1)
+                    if _content_matches_branch(
+                        apiurl, src_proj, package_path.name, obs_dir
+                    ):
+                        decisions[key] = "skip_branch"
+                    else:
+                        decisions[key] = "promote"
+                    # Always record the source project so that Phase 2 dep
+                    # queries include the source project's builddepinfo,
+                    # regardless of whether the decision is skip_branch or promote.
+                    branch_project_for[key] = src_proj
+                else:
+                    decisions[key] = "promote"
+            else:
+                decisions[key] = "promote"
+
+    # --- Phase 2: dep-triggered promotion (bidirectional fixed-point) ---
+    # If a package is being promoted (full sources), any package that depends
+    # on it — or that it depends on — and is currently an aggregate must also
+    # be promoted so the build environment stays consistent.
+    has_promotes = any(d == "promote" for d in decisions.values())
+    has_branches = any(d in ("aggregate", "skip_branch") for d in decisions.values())
+    if has_promotes and has_branches:
+        # When --branch-from is active, build dep info lives in the branch (dev)
+        # OBS instance; query only those projects.  Target projects (test) may
+        # not exist yet (first sync) and their build results are not meaningful
+        # for dep-promotion decisions.
+        # Without --branch-from, query the target projects on the target OBS.
+        local_pkg_names = set(pkg_key_by_name.keys())
+        if branch_rootprj:
+            dep_apiurl = branch_apiurl
+            # Include all branch projects, not just those with aggregate decisions.
+            # Packages that are "promote" may live in a branch project (e.g. builddep)
+            # whose builddepinfo is needed to detect binaries they provide.
+            dep_projects = {
+                _compute_branch_project(key[0], args.rootprj, branch_rootprj)
+                for key in decisions
+            }
+        else:
+            dep_apiurl = apiurl
+            # Include source projects from "skip_branch" decisions: these are the
+            # projects that hold the existing aggregates and have build results.
+            # Target projects are typically empty at this point.
+            dep_projects = {key[0] for key in decisions} | set(
+                branch_project_for.values()
+            )
+        _print_action(
+            f"planning: checking build dependencies ({len(dep_projects)} project(s))"
+        )
+        fwd_deps = _fetch_combined_depinfo(dep_apiurl, dep_projects, local_pkg_names)
+        logger.debug(
+            f"dep-promote: builddepinfo covers {len(fwd_deps)} local packages"
+            f" with known local build deps; local_pkg_names={local_pkg_names}"
+        )
+        if not fwd_deps:
+            _print_action(
+                "dep-promote: no build dep info available"
+                " (branch projects may not have build results yet)"
+            )
+        else:
+            # Build reverse map: rdeps[A] = {packages that depend on A}.
+            rdeps: dict[str, set[str]] = {}
+            for pkg, deps in fwd_deps.items():
+                for dep in deps:
+                    rdeps.setdefault(dep, set()).add(pkg)
+            # Iterate until no new promotions are triggered.
+            changed = True
+            while changed:
+                changed = False
+                for key, decision in list(decisions.items()):
+                    if decision != "promote":
+                        continue
+                    _, pkg_name = key
+                    # Forward: promote packages that depend on this one.
+                    for dependent in rdeps.get(pkg_name, set()):
+                        dep_key = pkg_key_by_name.get(dependent)
+                        if dep_key and decisions.get(dep_key) in (
+                            "aggregate",
+                            "skip_branch",
+                        ):
+                            _print_action(
+                                f"dep-promote: {dep_key[0]}/{dep_key[1]}"
+                                f"  (depends on promoted {pkg_name})"
+                            )
+                            decisions[dep_key] = "promote"
+                            changed = True
+                    # Backward: promote packages this one depends on.
+                    for dependency in fwd_deps.get(pkg_name, set()):
+                        dep_key = pkg_key_by_name.get(dependency)
+                        if dep_key and decisions.get(dep_key) in (
+                            "aggregate",
+                            "skip_branch",
+                        ):
+                            _print_action(
+                                f"dep-promote: {dep_key[0]}/{dep_key[1]}"
+                                f"  (is a build dep of promoted {pkg_name})"
+                            )
+                            decisions[dep_key] = "promote"
+                            changed = True
+
+    # --- Phase 3: execute uploads based on decisions ---
     for obs_project, package_path in targets:
         project_path = package_path.parent
         project_config = load_yaml(project_path / "project.yaml")
@@ -486,157 +601,114 @@ def cmd_sync(args):
             package_path.name
         )
 
-        project_local_path[obs_project_name] = project_path
-
         obs_dir = package_path / "obs"
-        if obs_dir.is_dir():
-            # Determine whether to aggregate or sync sources.
-            # Derive the corresponding branch project name by substituting the
-            # branch rootprj prefix for the current rootprj prefix.
-            use_aggregate = False
-            branch_project = ""
-            if branch_rootprj:
-                if obs_project_name == args.rootprj:
-                    branch_project = branch_rootprj
-                elif obs_project_name.startswith(args.rootprj + ":"):
-                    suffix = obs_project_name[len(args.rootprj) :]
-                    branch_project = branch_rootprj + suffix
-                else:
-                    branch_project = obs_project_name
-                use_aggregate = _resolve_branch_decision(
-                    apiurl, branch_project, package_path.name, package_path
-                )
+        if not obs_dir.is_dir():
+            continue
 
-            if use_aggregate:
-                # Upload only an _aggregate file pointing to the branch project.
-                agg_message = (
-                    f"branch: {args.branch_from} "
-                    f"({branch_project}/{package_path.name})"
+        key = (obs_project_name, package_path.name)
+        decision = decisions.get(key, "promote")
+
+        if decision == "aggregate":
+            bp = branch_project_for[key]
+            agg_message = f"branch: {args.branch_from} ({bp}/{package_path.name})"
+            pkg_names = _multibuild_packages(obs_dir, package_path.name)
+            agg_xml = _build_aggregate_xml(bp, pkg_names)
+            agg_dir = Path(tempfile.mkdtemp(prefix="percona-obs-agg-"))
+            try:
+                (agg_dir / "_aggregate").write_text(agg_xml, encoding="utf-8")
+                _upload_obs_files(
+                    apiurl,
+                    obs_project_name,
+                    package_path.name,
+                    agg_dir,
+                    message=agg_message,
+                    dry_run=dry_run_obs,
                 )
-                pkg_names = _multibuild_packages(obs_dir, package_path.name)
-                agg_xml = _build_aggregate_xml(branch_project, pkg_names)
-                agg_dir = Path(tempfile.mkdtemp(prefix="percona-obs-agg-"))
-                try:
-                    (agg_dir / "_aggregate").write_text(agg_xml, encoding="utf-8")
+            finally:
+                shutil.rmtree(agg_dir, ignore_errors=True)
+            for pkg_name in pkg_names:
+                _print_aggregate(f"{obs_project_name}/{pkg_name}  → {bp}/{pkg_name}")
+        elif decision == "skip_branch":
+            _print_same(f"files  {obs_project_name}/{package_path.name}")
+        else:  # "promote"
+            message = args.message or _generate_sync_message(args.dirty)
+            service_file = obs_dir / "_service"
+            run_services = (
+                not args.no_services
+                and service_file.is_file()
+                and _has_manual_services(service_file)
+            )
+            if run_services:
+                if args.dry_run and not args.dry_run_remote:
+                    # Pure dry-run: cannot run services; show service names and
+                    # report obs/ diff as-is.
+                    svc_root = ET.parse(service_file).getroot()
+                    for svc in svc_root.findall("service"):
+                        if svc.get("mode") == "manual":
+                            svc_name = svc.get("name", "?")
+                            _print_update(
+                                f"service {svc_name}  {obs_project_name}/{package_path.name}"
+                            )
                     _upload_obs_files(
                         apiurl,
                         obs_project_name,
                         package_path.name,
-                        agg_dir,
-                        message=agg_message,
-                        dry_run=dry_run_obs,
+                        obs_dir,
+                        message=message,
+                        dry_run=True,
                     )
-                finally:
-                    shutil.rmtree(agg_dir, ignore_errors=True)
-                for pkg_name in pkg_names:
-                    _print_aggregate(
-                        f"{obs_project_name}/{pkg_name}"
-                        f"  → {branch_project}/{pkg_name}"
-                    )
-            else:
-                # When not using --branch-from, the target OBS package may
-                # still hold a _aggregate from a prior --branch-from sync.
-                # If the source content hasn't changed, skip the upload.
-                if not branch_rootprj:
-                    prior_comment = _fetch_obs_package_latest_comment(
-                        apiurl, obs_project_name, package_path.name
-                    )
-                    if prior_comment:
-                        bm = _BRANCH_MSG_RE.match(prior_comment)
-                        if bm:
-                            src_proj = bm.group(1)
-                            if _content_matches_branch(
-                                apiurl, src_proj, package_path.name, obs_dir
-                            ):
-                                _print_same(
-                                    f"files  {obs_project_name}/{package_path.name}"
-                                )
-                                continue
-                message = args.message or _generate_sync_message(args.dirty)
-                service_file = obs_dir / "_service"
-                run_services = (
-                    not args.no_services
-                    and service_file.is_file()
-                    and _has_manual_services(service_file)
-                )
-                if run_services:
-                    if args.dry_run and not args.dry_run_remote:
-                        # Pure dry-run: cannot run services; show service names and
-                        # report obs/ diff as-is.
-                        svc_root = ET.parse(service_file).getroot()
-                        for svc in svc_root.findall("service"):
-                            if svc.get("mode") == "manual":
-                                svc_name = svc.get("name", "?")
-                                _print_update(
-                                    f"service {svc_name}  {obs_project_name}/{package_path.name}"
-                                )
-                        _upload_obs_files(
-                            apiurl,
-                            obs_project_name,
-                            package_path.name,
-                            obs_dir,
-                            message=message,
-                            dry_run=True,
-                        )
-                    else:
-                        workdir, manual_artifacts = _run_local_services(
-                            obs_dir,
-                            pkg_label=f"{obs_project_name}/{package_path.name}",
-                            cache=not args.no_cache,
-                        )
-                        try:
-                            combined = Path(
-                                tempfile.mkdtemp(prefix="percona-obs-upload-")
-                            )
-                            try:
-                                for f in obs_dir.iterdir():
-                                    if f.is_file():
-                                        _copy_with_env_subst(f, combined, env_vars)
-                                for art_name in manual_artifacts:
-                                    shutil.copy2(
-                                        workdir / art_name, combined / art_name
-                                    )
-                                _upload_obs_files(
-                                    apiurl,
-                                    obs_project_name,
-                                    package_path.name,
-                                    combined,
-                                    message=message,
-                                    dry_run=dry_run_obs,
-                                )
-                            finally:
-                                shutil.rmtree(combined, ignore_errors=True)
-                        finally:
-                            shutil.rmtree(workdir, ignore_errors=True)
                 else:
-                    if env_vars:
-                        sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                    workdir, manual_artifacts = _run_local_services(
+                        obs_dir,
+                        pkg_label=f"{obs_project_name}/{package_path.name}",
+                        cache=not args.no_cache,
+                    )
+                    try:
+                        combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
                         try:
                             for f in obs_dir.iterdir():
                                 if f.is_file():
-                                    _copy_with_env_subst(f, sub_dir, env_vars)
+                                    _copy_with_env_subst(f, combined, env_vars)
+                            for art_name in manual_artifacts:
+                                shutil.copy2(workdir / art_name, combined / art_name)
                             _upload_obs_files(
                                 apiurl,
                                 obs_project_name,
                                 package_path.name,
-                                sub_dir,
+                                combined,
                                 message=message,
                                 dry_run=dry_run_obs,
                             )
                         finally:
-                            shutil.rmtree(sub_dir, ignore_errors=True)
-                    else:
+                            shutil.rmtree(combined, ignore_errors=True)
+                    finally:
+                        shutil.rmtree(workdir, ignore_errors=True)
+            else:
+                if env_vars:
+                    sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                    try:
+                        for f in obs_dir.iterdir():
+                            if f.is_file():
+                                _copy_with_env_subst(f, sub_dir, env_vars)
                         _upload_obs_files(
                             apiurl,
                             obs_project_name,
                             package_path.name,
-                            obs_dir,
+                            sub_dir,
                             message=message,
                             dry_run=dry_run_obs,
                         )
-                full_uploaded_by_project.setdefault(obs_project_name, set()).add(
-                    package_path.name
-                )
+                    finally:
+                        shutil.rmtree(sub_dir, ignore_errors=True)
+                else:
+                    _upload_obs_files(
+                        apiurl,
+                        obs_project_name,
+                        package_path.name,
+                        obs_dir,
+                        message=message,
+                        dry_run=dry_run_obs,
+                    )
 
     # --- orphan cleanup ---
     # Remove packages on OBS that no longer exist locally, but only when the
@@ -655,122 +727,6 @@ def cmd_sync(args):
         orphan_projects = obs_subprojects - local_project_names
         for orphan_proj in sorted(orphan_projects, key=lambda x: -x.count(":")):
             _delete_obs_project(apiurl, orphan_proj, dry_run_obs)
-
-    # --- dep-triggered promotion ---
-    # When --branch-from is active and packages were uploaded with full sources,
-    # find any currently-aggregated packages that have a build dependency on those
-    # changed packages and promote them too (replace _aggregate with full sources).
-    if branch_rootprj and full_uploaded_by_project:
-        for obs_project_name, changed_pkgs in full_uploaded_by_project.items():
-            if obs_project_name == args.rootprj:
-                branch_project = branch_rootprj
-            elif obs_project_name.startswith(args.rootprj + ":"):
-                bp_suffix = obs_project_name[len(args.rootprj) :]
-                branch_project = branch_rootprj + bp_suffix
-            else:
-                branch_project = obs_project_name
-            reverse_deps = _fetch_builddepinfo(apiurl, branch_project)
-            if not reverse_deps:
-                logger.debug(
-                    f"dep-promote: no builddepinfo for {branch_project}, skipping"
-                )
-                continue
-            dep_promotes = _collect_dep_promotes(
-                apiurl, obs_project_name, changed_pkgs, reverse_deps, changed_pkgs
-            )
-            proj_path = project_local_path.get(obs_project_name)
-            if not dep_promotes or proj_path is None:
-                continue
-            for pkg_name in sorted(dep_promotes):
-                package_path = proj_path / pkg_name
-                if not package_path.is_dir() or not is_package(package_path):
-                    logger.debug(
-                        f"dep-promote: {obs_project_name}/{pkg_name} not in local tree, skipping"
-                    )
-                    continue
-                obs_dir = package_path / "obs"
-                if not obs_dir.is_dir():
-                    continue
-                message = args.message or _generate_sync_message(args.dirty)
-                service_file = obs_dir / "_service"
-                run_services = (
-                    not args.no_services
-                    and service_file.is_file()
-                    and _has_manual_services(service_file)
-                )
-                if run_services:
-                    if args.dry_run and not args.dry_run_remote:
-                        svc_root = ET.parse(service_file).getroot()
-                        for svc in svc_root.findall("service"):
-                            if svc.get("mode") == "manual":
-                                svc_name = svc.get("name", "?")
-                                _print_update(
-                                    f"service {svc_name}  {obs_project_name}/{pkg_name}"
-                                )
-                        _upload_obs_files(
-                            apiurl,
-                            obs_project_name,
-                            pkg_name,
-                            obs_dir,
-                            message=message,
-                            dry_run=True,
-                        )
-                    else:
-                        workdir, manual_artifacts = _run_local_services(
-                            obs_dir,
-                            pkg_label=f"{obs_project_name}/{pkg_name}",
-                            cache=not args.no_cache,
-                        )
-                        try:
-                            combined = Path(
-                                tempfile.mkdtemp(prefix="percona-obs-upload-")
-                            )
-                            try:
-                                for f in obs_dir.iterdir():
-                                    if f.is_file():
-                                        _copy_with_env_subst(f, combined, env_vars)
-                                for art_name in manual_artifacts:
-                                    shutil.copy2(
-                                        workdir / art_name, combined / art_name
-                                    )
-                                _upload_obs_files(
-                                    apiurl,
-                                    obs_project_name,
-                                    pkg_name,
-                                    combined,
-                                    message=message,
-                                    dry_run=dry_run_obs,
-                                )
-                            finally:
-                                shutil.rmtree(combined, ignore_errors=True)
-                        finally:
-                            shutil.rmtree(workdir, ignore_errors=True)
-                else:
-                    if env_vars:
-                        sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
-                        try:
-                            for f in obs_dir.iterdir():
-                                if f.is_file():
-                                    _copy_with_env_subst(f, sub_dir, env_vars)
-                            _upload_obs_files(
-                                apiurl,
-                                obs_project_name,
-                                pkg_name,
-                                sub_dir,
-                                message=message,
-                                dry_run=dry_run_obs,
-                            )
-                        finally:
-                            shutil.rmtree(sub_dir, ignore_errors=True)
-                    else:
-                        _upload_obs_files(
-                            apiurl,
-                            obs_project_name,
-                            pkg_name,
-                            obs_dir,
-                            message=message,
-                            dry_run=dry_run_obs,
-                        )
 
     if args.dry_run:
         suffix = " (dry run)"

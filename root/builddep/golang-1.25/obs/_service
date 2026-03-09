@@ -1,5 +1,5 @@
 <services>
   <service name="download_url">
-    <param name="url">https://dl.google.com/go/go1.25.8.linux-amd64.tar.gz</param>
+    <param name="url">https://dl.google.com/go/go1.25.7.linux-amd64.tar.gz</param>
   </service>
 </services>

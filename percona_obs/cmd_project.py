@@ -67,12 +67,18 @@ def _validate_project_path_refs(
     root: Path,
     env_vars: dict[str, str] | None,
     apiurl: str,
+    rootprj: str | None = None,
 ) -> list[tuple[Path, str]]:
     """Validate project: path entries in project.yaml files against the live OBS.
 
     For each ``project:`` entry (after env var substitution), verifies that:
     1. The referenced OBS project exists on the server.
     2. The referenced repository name exists in that project.
+
+    Only locally-managed projects (those with a corresponding directory under
+    REPO_ROOT) are validated.  External interconnect references such as
+    ``openSUSE.org:openSUSE:Factory`` are skipped automatically because they
+    will not appear in the local directory tree.
 
     Entries whose ``project:`` or ``repository:`` value contains unresolvable
     ``${VAR}`` tokens (env_vars is None or var is absent) are skipped.
@@ -81,6 +87,16 @@ def _validate_project_path_refs(
     The OBS project meta is fetched at most once per unique project name.
     """
     errors: list[tuple[Path, str]] = []
+
+    # Build the set of locally-managed OBS project names by scanning the
+    # directory tree under REPO_ROOT.  Only these names are validated against
+    # the live OBS instance; everything else is an external interconnect.
+    local_obs_project_names: set[str] = set()
+    if rootprj:
+        root_config = load_yaml(REPO_ROOT / "project.yaml")
+        root_obs_name = root_config.get("name") or rootprj
+        for obs_name, _ in find_projects(REPO_ROOT, root_obs_name):
+            local_obs_project_names.add(obs_name)
 
     # Collect (yaml_path, resolved_project, resolved_repository) triples.
     triples: list[tuple[Path, str, str]] = []
@@ -121,6 +137,11 @@ def _validate_project_path_refs(
     # project_repos[project] = set of repo names, or None if project not found.
     project_repos: dict[str, set[str] | None] = {}
     for yaml_path, project, repository in triples:
+        # Skip projects that are not locally managed (external interconnects).
+        # When rootprj was provided, only names found in the local directory
+        # tree are validated; everything else is skipped silently.
+        if local_obs_project_names and project not in local_obs_project_names:
+            continue
         if project not in project_repos:
             try:
                 raw = osc.core.show_project_meta(apiurl, project)
@@ -325,7 +346,9 @@ def cmd_project_verify(args) -> None:
         apiurl = profile.get("apiurl", "")
         if apiurl:
             osc.conf.get_config(override_apiurl=apiurl)
-            path_ref_errors = _validate_project_path_refs(scan_root, env_vars, apiurl)
+            path_ref_errors = _validate_project_path_refs(
+                scan_root, env_vars, apiurl, rootprj=getattr(args, "rootprj", None)
+            )
 
     for yaml_path, msg in ref_errors:
         rel = yaml_path.relative_to(REPO_ROOT.parent)
