@@ -726,6 +726,103 @@ osc rebuild <project> <package>
 osc buildlog <project> <package> <repo> <arch>
 ```
 
+## Debugging and Bug Investigation Workflow
+
+When investigating a bug or unexpected behaviour in `percona-obs`, use the following iterative process.
+
+### 1. Reproduce with `--verbose --dry-run`
+
+Always start with a fully-verbose, non-destructive run:
+
+```sh
+./percona-obs --verbose -P <profile> sync push [args] --dry-run
+```
+
+- `--verbose` enables `DEBUG`-level log messages (prefixed `  · `), showing every OBS API call, unchanged-item decisions, dep-promotion steps, and cache hits/misses.
+- `--dry-run` prevents any write to OBS, so the run is safe to repeat indefinitely.
+- `--dirty` skips the git clean check when testing from a working tree with uncommitted changes.
+
+For `build dependency`, which has no dry-run flag, just run it directly against the test profile:
+
+```sh
+./percona-obs --verbose -P <profile> build dependency
+```
+
+### 2. Read the verbose output carefully
+
+Key things to look for in verbose output:
+
+| Verbose line | What it tells you |
+|---|---|
+| `planning: checking sync decisions` | Phase 1 started |
+| `branch decision: git-log  <pkg>  (…)` | Git-based unchanged check for a package |
+| `branch decision: content check  <pkg>  (…)` | MD5/obsinfo fallback check for a package |
+| `branch decision: aggregate  <pkg>  (content matches)` | Package was classified as aggregate |
+| `planning: checking build dependencies (N project(s))` | Phase 2 started; N = number of projects queried |
+| `dep-promote: builddepinfo covers N local packages` | How many packages the dep query returned data for |
+| `dep-promote: <pkg> promoted by dep on <other>` | A package was cascade-promoted by Phase 2 |
+| `fetching revision history: <project>/<pkg>` | OBS revision comment lookup (build dependency / Phase 1 plain-push) |
+
+If `dep-promote: builddepinfo covers 0 local packages` appears, the dep query returned nothing — likely querying the wrong OBS instance or querying projects with no build results yet.
+
+### 3. Add targeted `logger.debug()` calls
+
+When verbose output is insufficient, add temporary debug logging to the relevant function. The `logger` instance is available in every module via `from .common import logger`. Example:
+
+```python
+logger.debug(f"dep-promote: dep_projects={dep_projects!r}, dep_apiurl={dep_apiurl!r}")
+logger.debug(f"branch decision raw comment: {prior_comment!r}")
+```
+
+Run again with `--verbose` to see the new output. Remove the temporary lines once the root cause is found.
+
+### 4. Check the OBS source revision comment directly
+
+The revision comment on a package is the key data used by Phase 1 and `build dependency` to detect aggregates. Inspect it with:
+
+```sh
+osc -A <apiurl> api /source/<project>/<package>/_history | tail -20
+```
+
+The comment format must match one of these patterns (see `_SYNC_MSG_RE` / `_BRANCH_MSG_RE`):
+- `sync: <branch>@<sha> (<detail>)` — normal source sync
+- `sync: <branch>@<sha> (local changes on <hostname>)` — dirty sync
+- `branch: <profile> (<source_project>/<package>)` — aggregate from `--branch-from`
+
+If the comment doesn't match either pattern, `percona-obs` treats the package as changed (promotes it).
+
+### 5. Check `_builddepinfo` directly
+
+When Phase 2 or `build dependency` is not finding expected deps, verify what OBS actually returns:
+
+```sh
+osc -A <apiurl> api /build/<project>/_builddepinfo
+```
+
+Key things to check:
+- Is the project listed at all? (It won't be if all packages are aggregates — `_builddepinfo` only covers packages with real build results.)
+- Are the package names in `<package name="…">` matching what you expect? Multibuild packages appear as `pkg:flavor` — the code strips the `:flavor` suffix.
+- Do the `<pkgdep>` entries resolve to binary names that appear as `<subpkg>` in another package's entry?
+
+### 6. Trace the cross-instance routing
+
+When branching is involved, always confirm which OBS instance is being queried:
+
+- **`sync push --branch-from <profile>`**: Phase 2 always queries `branch_apiurl` (from the branch profile). Verify that the branch profile's `apiurl` field is set correctly with `./percona-obs profile list`.
+- **`sync push` (plain, over a previously branched env)**: Phase 2 loads the profile named in each `branch:` revision comment to get its `apiurl`. If the profile has been renamed or deleted, it falls back to the target `apiurl` with a debug log.
+- **`build dependency`**: checks every package's revision comment individually; routes each package's source project to the correct `apiurl` via the same profile lookup.
+
+### 7. Common root causes seen in practice
+
+| Symptom | Root cause | Fix applied |
+|---|---|---|
+| Phase 2 reports "0 local packages" | Querying target OBS for projects that have only aggregates (no build results) | Query the branch OBS (`branch_apiurl`) instead of the target OBS |
+| Dep propagation not triggering for `pkg:flavor` multibuild | OBS `_builddepinfo` names source as `pkg:flavor`; lookup uses base name | Strip `:flavor` suffix in `_fetch_combined_depinfo` |
+| Plain push does not cascade-promote dependents | `branch_project_for` not populated for "promote" decisions | Always record `branch_project_for[key]` when a `branch:` comment is detected, regardless of decision |
+| `build dependency` missing deps for aggregate packages | Querying target OBS (aggregates have no builddepinfo there) | Check revision comment per package; route aggregate packages to their source OBS |
+| `build dependency` wrong for mixed projects (some promoted, some aggregate) | Single-representative heuristic picked the promoted package | Check ALL packages (not just a representative) to cover mixed projects |
+| `_validate_project_path_refs` hangs on external/interconnect OBS | Querying live OBS for non-local project references | Build local project name whitelist from `find_projects(REPO_ROOT, …)`; skip any `project:` entry not in that set |
+
 ## Key Files by Pattern
 | Purpose | Exemplar |
 |---|---|
