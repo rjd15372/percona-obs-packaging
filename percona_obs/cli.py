@@ -5,7 +5,7 @@ import sys
 import osc.conf
 import urllib3.exceptions
 
-from .cmd_build import cmd_build_status, cmd_build_trigger
+from .cmd_build import cmd_build_dependency, cmd_build_status, cmd_build_trigger
 from .cmd_profile import (
     _load_profile,
     _load_profile_env_strings,
@@ -289,6 +289,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter output to a specific repository name (e.g. RockyLinux_9).",
     )
     build_status_parser.set_defaults(func=cmd_build_status)
+
+    build_dep_parser = build_subparsers.add_parser(
+        "dependency",
+        help="Show local build dependency trees derived from OBS build results.",
+    )
+    build_dep_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Restrict to packages under this project (colon notation, e.g. ppg:17.9). "
+        "If omitted, all packages under root/ are included.",
+    )
+    build_dep_parser.set_defaults(func=cmd_build_dependency)
 
     profile_parser = subparsers.add_parser(
         "profile",

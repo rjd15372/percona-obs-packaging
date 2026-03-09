@@ -15,12 +15,14 @@ from .common import (
     _col,
     _print_ok,
     _print_pending,
+    find_packages,
     is_package,
     load_yaml,
     logger,
     resolve_project_path,
     REPO_ROOT,
 )
+from .obs_api import _fetch_combined_depinfo
 from .targets import _resolve_targets
 
 # ---------------------------------------------------------------------------
@@ -280,6 +282,120 @@ def _print_project_tree(
             _print_pkg_repos(
                 repo_results, pkg_prefix, pkg_versions, repo_filter, bool(flavor_suffix)
             )
+
+
+def _print_dep_tree(
+    pkg: str,
+    pkg_to_project: dict[str, str],
+    fwd_deps: dict[str, set[str]],
+    prefix: str,
+    is_last: bool,
+    path_set: set[str],
+    is_root: bool = False,
+) -> None:
+    """Recursively print one node in the build dependency tree."""
+    proj = pkg_to_project.get(pkg, "?")
+    label = f"{_col(_BOLD, pkg)} {_col(_DIM, f'({proj})')}"
+    if is_root:
+        print(label)
+        child_prefix = ""
+    else:
+        connector = "└── " if is_last else "├── "
+        print(f"{prefix}{connector}{label}")
+        child_prefix = prefix + ("    " if is_last else "│   ")
+
+    if pkg in path_set:
+        print(f"{child_prefix}└── {_col(_DIM, '(cycle)')}")
+        return
+
+    deps = sorted(fwd_deps.get(pkg, set()))
+    if not deps:
+        return
+
+    new_path = path_set | {pkg}
+    for i, dep in enumerate(deps):
+        _print_dep_tree(
+            dep,
+            pkg_to_project,
+            fwd_deps,
+            child_prefix,
+            i == len(deps) - 1,
+            new_path,
+        )
+
+
+def cmd_build_dependency(args) -> None:
+    """Show local build dependency trees derived from OBS _builddepinfo.
+
+    Queries the OBS build dependency information for all local packages and
+    renders one dependency tree per root package (a package that no other
+    local package depends on).  Packages with no local build dependencies
+    and no local dependents are listed separately at the bottom.
+
+    Supported call forms:
+      build dependency                  — full dep graph across root/
+      build dependency <project>        — scope to packages under a project
+    """
+    apiurl = osc.conf.config["apiurl"]
+
+    # Gather local packages in scope.
+    if getattr(args, "project", None):
+        scope_path = resolve_project_path(args.project)
+        if not scope_path.is_dir() or is_package(scope_path):
+            raise SystemExit(f"error: '{args.project}' is not a project directory")
+        scope_obs = f"{args.rootprj}:{args.project}"
+        targets = list(find_packages(scope_path, scope_obs))
+    else:
+        root_config = load_yaml(REPO_ROOT / "project.yaml")
+        root_obs = root_config.get("name") or args.rootprj
+        targets = list(find_packages(REPO_ROOT, root_obs))
+
+    if not targets:
+        raise SystemExit("error: no packages found")
+
+    # Resolve OBS project names and build the pkg → project mapping.
+    pkg_to_project: dict[str, str] = {}
+    all_obs_projects: set[str] = set()
+    for obs_project, package_path in targets:
+        project_config = load_yaml(package_path.parent / "project.yaml")
+        obs_name = project_config.get("name") or obs_project
+        pkg_to_project[package_path.name] = obs_name
+        all_obs_projects.add(obs_name)
+
+    all_pkg_names = set(pkg_to_project.keys())
+
+    # Fetch build dependency info from OBS.
+    fwd_deps = _fetch_combined_depinfo(apiurl, all_obs_projects, all_pkg_names)
+
+    if not fwd_deps:
+        print(_col(_DIM, "(no build dependency information available)"))
+        print(_col(_DIM, "  OBS projects may not have build results yet."))
+        return
+
+    # Find root packages: not depended on by any other local package.
+    all_dependents: set[str] = set()
+    for deps in fwd_deps.values():
+        all_dependents.update(deps)
+
+    roots = sorted(pkg for pkg in all_pkg_names if pkg not in all_dependents)
+
+    # Packages with at least one local dep get a tree; isolated ones are listed last.
+    trees = [r for r in roots if r in fwd_deps]
+    isolated = [r for r in roots if r not in fwd_deps]
+
+    sep = False
+    for root in trees:
+        if sep:
+            print()
+        _print_dep_tree(root, pkg_to_project, fwd_deps, "", True, set(), is_root=True)
+        sep = True
+
+    if isolated:
+        if sep:
+            print()
+        for pkg in isolated:
+            proj = pkg_to_project.get(pkg, "?")
+            print(f"{_col(_BOLD, pkg)} {_col(_DIM, f'({proj})')}")
 
 
 def cmd_build_trigger(args):
