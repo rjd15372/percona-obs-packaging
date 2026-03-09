@@ -8,5 +8,5 @@ Package: golang-1.25
 Architecture: amd64
 Provides: golang-go
 Description: Go programming language toolchain version 1.25
- The Go programming language toolchain, version 1.25.7,
+ The Go programming language toolchain, version 1.25.8,
  installed from the official binary distribution.

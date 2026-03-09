@@ -9,7 +9,11 @@ from pathlib import Path
 import osc.conf
 
 from .cmd_profile import _load_profile
-from .cmd_project import _validate_obs_scm_revisions, _validate_subproject_refs
+from .cmd_project import (
+    _validate_obs_scm_revisions,
+    _validate_project_path_refs,
+    _validate_subproject_refs,
+)
 from .common import (
     REPO_ROOT,
     _build_aggregate_xml,
@@ -34,8 +38,10 @@ from .git_utils import (
 from .obs_api import (
     _apply_package_config,
     _apply_project_config,
+    _create_project_skeleton,
     _delete_obs_package,
     _delete_obs_project,
+    _fetch_builddepinfo,
     _fetch_obs_file_content,
     _fetch_obs_file_md5s,
     _fetch_obs_package_latest_comment,
@@ -50,7 +56,7 @@ from .services import (
     _has_manual_services,
     _run_local_services,
 )
-from .targets import _iter_project_chain, _resolve_targets, _topo_sort_projects
+from .targets import _iter_project_chain, _resolve_targets
 
 # Matches the standard sync commit message: sync: <branch>@<sha> (<detail>)
 _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
@@ -230,6 +236,41 @@ def _resolve_branch_decision(
     return not changed
 
 
+def _collect_dep_promotes(
+    apiurl: str,
+    obs_project_name: str,
+    changed_pkgs: set[str],
+    reverse_deps: dict[str, set[str]],
+    already_in_scope: set[str],
+) -> set[str]:
+    """Return packages that must be promoted due to a build dep on changed_pkgs.
+
+    Performs a BFS over reverse_deps starting from changed_pkgs.  For each
+    reachable package that is not already being promoted (already_in_scope),
+    checks whether it is currently a branch aggregate in obs_project_name.
+    Packages that are aggregates are added to the result set; traversal
+    continues through them so their own dependents are also checked.
+
+    Uses a visited set so cycles (impossible in practice) cannot loop forever.
+    """
+    result: set[str] = set()
+    visited: set[str] = set(already_in_scope)
+    queue: list[str] = list(changed_pkgs)
+    while queue:
+        src = queue.pop()
+        for dependent in reverse_deps.get(src, set()):
+            if dependent in visited:
+                continue
+            visited.add(dependent)
+            comment = _fetch_obs_package_latest_comment(
+                apiurl, obs_project_name, dependent
+            )
+            if comment and _BRANCH_MSG_RE.match(comment):
+                result.add(dependent)
+                queue.append(dependent)
+    return result
+
+
 def cmd_sync(args):
     """Sync local packaging files to OBS, creating or updating projects and packages.
 
@@ -281,6 +322,17 @@ def cmd_sync(args):
         parse_env_overrides(args.env_overrides) if args.env_overrides else None
     )
 
+    # Validate project: path entries against the live OBS instance.  This
+    # catches mismatches like a missing trailing ':' in an env var value
+    # (e.g. REMOTE_OBS_ORG_INTERCONNECT=openSUSE.org instead of openSUSE.org:)
+    # before any projects or packages are created or modified.
+    path_ref_errors = _validate_project_path_refs(REPO_ROOT, env_vars, apiurl)
+    if path_ref_errors:
+        for yaml_path, msg in path_ref_errors:
+            rel = yaml_path.relative_to(REPO_ROOT.parent)
+            print(f"error: {rel}: {msg}", file=sys.stderr)
+        sys.exit(1)
+
     # Resolve --branch-from profile (same OBS instance, different root project).
     branch_rootprj: str | None = None
     if args.branch_from:
@@ -298,30 +350,22 @@ def cmd_sync(args):
     seen_projects: set = set()
     local_project_names: set[str] = set()
     local_packages_by_project: dict[str, set[str]] = {}
+    # Tracks packages uploaded with full sources (not aggregated), per OBS project.
+    full_uploaded_by_project: dict[str, set[str]] = {}
+    # Maps obs_project_name -> local project directory path, for dep promotion lookups.
+    project_local_path: dict[str, Path] = {}
     dry_run_obs = args.dry_run or args.dry_run_remote
 
-    # Always create the root project first. OBS requires parent projects to exist
-    # before any subproject can be created, so this must happen before the topo
-    # sort loop (which may order subprojects ahead of the root due to repository
-    # path dependencies).
-    root_config = load_yaml(REPO_ROOT / "project.yaml")
-    root_obs_name = root_config.get("name") or args.rootprj
-    _apply_project_config(
-        apiurl,
-        root_obs_name,
-        REPO_ROOT,
-        args.rootprj,
-        force=args.force,
-        dry_run=dry_run_obs,
-        env_vars=env_vars,
-    )
-    seen_projects.add(args.rootprj)
-
-    # Pre-pass: apply all project configs in dependency order — projects referenced
-    # via 'subproject:' first, then deeper subprojects before their parents.
-    # This ensures any project referenced in a repository path already exists on
-    # OBS before the project that references it is written, avoiding
-    # repository_access_failure errors.
+    # Pre-pass: two-stage project creation to handle OBS path-reference cycles.
+    #
+    # Stage 1 — create bare skeleton projects (no <repository> elements) for any
+    #   project that does not yet exist on OBS.  Projects are processed
+    #   shallowest-first (fewest ':' in the OBS name) so OBS parent projects
+    #   always exist before their children, regardless of path dependencies.
+    #
+    # Stage 2 — apply the full project config (repos, paths, build config) once
+    #   every project in the tree exists.  Because all projects are already
+    #   present by this point, OBS never raises repository_access_failure.
     if args.package is None:
         all_projects: dict[str, tuple[str, Path]] = {}
         for obs_project, package_path in targets:
@@ -331,8 +375,33 @@ def cmd_sync(args):
                 local_project_names.add(prj_name)
                 if raw_proj not in all_projects:
                     all_projects[raw_proj] = (prj_name, proj_path)
-        for raw_proj in _topo_sort_projects(all_projects, args.rootprj):
-            prj_name, proj_path = all_projects[raw_proj]
+        sorted_projs = sorted(all_projects.items(), key=lambda kv: kv[1][0].count(":"))
+        for _raw, (prj_name, proj_path) in sorted_projs:
+            _create_project_skeleton(
+                apiurl, prj_name, proj_path, dry_run=dry_run_obs, env_vars=env_vars
+            )
+        # Stage 2 pass 1: configure all projects.  Projects whose <path>
+        # elements reference sibling/child projects that are still skeletons
+        # will have those paths stripped and need a second pass.
+        needs_reconfig: list[tuple[str, str, Path]] = []
+        for raw_proj, (prj_name, proj_path) in sorted_projs:
+            stripped = _apply_project_config(
+                apiurl,
+                prj_name,
+                proj_path,
+                args.rootprj,
+                force=args.force,
+                dry_run=dry_run_obs,
+                env_vars=env_vars,
+            )
+            if stripped:
+                needs_reconfig.append((raw_proj, prj_name, proj_path))
+            seen_projects.add(raw_proj)
+        # Stage 2 pass 2: re-apply config for projects that had paths stripped.
+        # By now all sibling/child projects have their repositories configured,
+        # so OBS will accept the full meta.  Projects already correctly
+        # configured are detected by _project_meta_subset_equal and skipped.
+        for raw_proj, prj_name, proj_path in needs_reconfig:
             _apply_project_config(
                 apiurl,
                 prj_name,
@@ -342,7 +411,6 @@ def cmd_sync(args):
                 dry_run=dry_run_obs,
                 env_vars=env_vars,
             )
-            seen_projects.add(raw_proj)
 
     if args.project_only:
         if args.dry_run:
@@ -360,10 +428,8 @@ def cmd_sync(args):
         obs_project_name = project_config.get("name") or obs_project
 
         if args.package is not None:
-            # Single-package target: ensure the project hierarchy exists on OBS.
-            # If the immediate project is missing, apply the full chain in
-            # dependency order so projects referenced via 'subproject:' are
-            # created before the projects that reference them.
+            # Single-package target: ensure the project hierarchy exists on OBS
+            # using the same two-stage approach as the full-tree pre-pass.
             if not _obs_project_exists(apiurl, obs_project_name):
                 chain: dict[str, tuple[str, Path]] = {}
                 for raw_proj, prj_name, proj_path in _iter_project_chain(
@@ -372,10 +438,20 @@ def cmd_sync(args):
                     local_project_names.add(prj_name)
                     if raw_proj not in chain:
                         chain[raw_proj] = (prj_name, proj_path)
-                for raw_proj in _topo_sort_projects(chain, args.rootprj):
-                    prj_name, proj_path = chain[raw_proj]
+                sorted_chain = sorted(chain.items(), key=lambda kv: kv[1][0].count(":"))
+                for _raw, (prj_name, proj_path) in sorted_chain:
+                    if _raw not in seen_projects:
+                        _create_project_skeleton(
+                            apiurl,
+                            prj_name,
+                            proj_path,
+                            dry_run=dry_run_obs,
+                            env_vars=env_vars,
+                        )
+                chain_needs_reconfig: list[tuple[str, str, Path]] = []
+                for raw_proj, (prj_name, proj_path) in sorted_chain:
                     if raw_proj not in seen_projects:
-                        _apply_project_config(
+                        stripped = _apply_project_config(
                             apiurl,
                             prj_name,
                             proj_path,
@@ -384,7 +460,19 @@ def cmd_sync(args):
                             dry_run=dry_run_obs,
                             env_vars=env_vars,
                         )
+                        if stripped:
+                            chain_needs_reconfig.append((raw_proj, prj_name, proj_path))
                         seen_projects.add(raw_proj)
+                for raw_proj, prj_name, proj_path in chain_needs_reconfig:
+                    _apply_project_config(
+                        apiurl,
+                        prj_name,
+                        proj_path,
+                        args.rootprj,
+                        force=args.force,
+                        dry_run=dry_run_obs,
+                        env_vars=env_vars,
+                    )
 
         _apply_package_config(
             apiurl,
@@ -397,6 +485,8 @@ def cmd_sync(args):
         local_packages_by_project.setdefault(obs_project_name, set()).add(
             package_path.name
         )
+
+        project_local_path[obs_project_name] = project_path
 
         obs_dir = package_path / "obs"
         if obs_dir.is_dir():
@@ -544,6 +634,9 @@ def cmd_sync(args):
                             message=message,
                             dry_run=dry_run_obs,
                         )
+                full_uploaded_by_project.setdefault(obs_project_name, set()).add(
+                    package_path.name
+                )
 
     # --- orphan cleanup ---
     # Remove packages on OBS that no longer exist locally, but only when the
@@ -562,6 +655,122 @@ def cmd_sync(args):
         orphan_projects = obs_subprojects - local_project_names
         for orphan_proj in sorted(orphan_projects, key=lambda x: -x.count(":")):
             _delete_obs_project(apiurl, orphan_proj, dry_run_obs)
+
+    # --- dep-triggered promotion ---
+    # When --branch-from is active and packages were uploaded with full sources,
+    # find any currently-aggregated packages that have a build dependency on those
+    # changed packages and promote them too (replace _aggregate with full sources).
+    if branch_rootprj and full_uploaded_by_project:
+        for obs_project_name, changed_pkgs in full_uploaded_by_project.items():
+            if obs_project_name == args.rootprj:
+                branch_project = branch_rootprj
+            elif obs_project_name.startswith(args.rootprj + ":"):
+                bp_suffix = obs_project_name[len(args.rootprj) :]
+                branch_project = branch_rootprj + bp_suffix
+            else:
+                branch_project = obs_project_name
+            reverse_deps = _fetch_builddepinfo(apiurl, branch_project)
+            if not reverse_deps:
+                logger.debug(
+                    f"dep-promote: no builddepinfo for {branch_project}, skipping"
+                )
+                continue
+            dep_promotes = _collect_dep_promotes(
+                apiurl, obs_project_name, changed_pkgs, reverse_deps, changed_pkgs
+            )
+            proj_path = project_local_path.get(obs_project_name)
+            if not dep_promotes or proj_path is None:
+                continue
+            for pkg_name in sorted(dep_promotes):
+                package_path = proj_path / pkg_name
+                if not package_path.is_dir() or not is_package(package_path):
+                    logger.debug(
+                        f"dep-promote: {obs_project_name}/{pkg_name} not in local tree, skipping"
+                    )
+                    continue
+                obs_dir = package_path / "obs"
+                if not obs_dir.is_dir():
+                    continue
+                message = args.message or _generate_sync_message(args.dirty)
+                service_file = obs_dir / "_service"
+                run_services = (
+                    not args.no_services
+                    and service_file.is_file()
+                    and _has_manual_services(service_file)
+                )
+                if run_services:
+                    if args.dry_run and not args.dry_run_remote:
+                        svc_root = ET.parse(service_file).getroot()
+                        for svc in svc_root.findall("service"):
+                            if svc.get("mode") == "manual":
+                                svc_name = svc.get("name", "?")
+                                _print_update(
+                                    f"service {svc_name}  {obs_project_name}/{pkg_name}"
+                                )
+                        _upload_obs_files(
+                            apiurl,
+                            obs_project_name,
+                            pkg_name,
+                            obs_dir,
+                            message=message,
+                            dry_run=True,
+                        )
+                    else:
+                        workdir, manual_artifacts = _run_local_services(
+                            obs_dir,
+                            pkg_label=f"{obs_project_name}/{pkg_name}",
+                            cache=not args.no_cache,
+                        )
+                        try:
+                            combined = Path(
+                                tempfile.mkdtemp(prefix="percona-obs-upload-")
+                            )
+                            try:
+                                for f in obs_dir.iterdir():
+                                    if f.is_file():
+                                        _copy_with_env_subst(f, combined, env_vars)
+                                for art_name in manual_artifacts:
+                                    shutil.copy2(
+                                        workdir / art_name, combined / art_name
+                                    )
+                                _upload_obs_files(
+                                    apiurl,
+                                    obs_project_name,
+                                    pkg_name,
+                                    combined,
+                                    message=message,
+                                    dry_run=dry_run_obs,
+                                )
+                            finally:
+                                shutil.rmtree(combined, ignore_errors=True)
+                        finally:
+                            shutil.rmtree(workdir, ignore_errors=True)
+                else:
+                    if env_vars:
+                        sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                        try:
+                            for f in obs_dir.iterdir():
+                                if f.is_file():
+                                    _copy_with_env_subst(f, sub_dir, env_vars)
+                            _upload_obs_files(
+                                apiurl,
+                                obs_project_name,
+                                pkg_name,
+                                sub_dir,
+                                message=message,
+                                dry_run=dry_run_obs,
+                            )
+                        finally:
+                            shutil.rmtree(sub_dir, ignore_errors=True)
+                    else:
+                        _upload_obs_files(
+                            apiurl,
+                            obs_project_name,
+                            pkg_name,
+                            obs_dir,
+                            message=message,
+                            dry_run=dry_run_obs,
+                        )
 
     if args.dry_run:
         suffix = " (dry run)"

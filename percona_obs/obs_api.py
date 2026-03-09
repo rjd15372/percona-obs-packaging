@@ -174,6 +174,113 @@ def _fetch_obs_subproject_names(apiurl: str, rootprj: str) -> set[str]:
         return set()
 
 
+def _fetch_builddepinfo(apiurl: str, obs_project: str) -> dict[str, set[str]]:
+    """Return a reverse build-dependency map for an OBS project.
+
+    Returns {source_pkg: set_of_source_pkgs_that_depend_on_it}.
+
+    Queries _builddepinfo for the first available repository and architecture.
+    Returns {} if the project has no build results yet or on any error.
+    """
+    try:
+        # List repositories in the project.
+        repo_url = osc.core.makeurl(apiurl, ["build", obs_project])
+        repo_root = ET.fromstring(osc.connection.http_GET(repo_url).read())
+        repos = [e.get("name", "") for e in repo_root.findall("entry") if e.get("name")]
+        if not repos:
+            return {}
+
+        # List architectures for the first repository.
+        arch_url = osc.core.makeurl(apiurl, ["build", obs_project, repos[0]])
+        arch_root = ET.fromstring(osc.connection.http_GET(arch_url).read())
+        archs = [e.get("name", "") for e in arch_root.findall("entry") if e.get("name")]
+        if not archs:
+            return {}
+
+        # Fetch _builddepinfo for the first repo/arch combination.
+        dep_url = osc.core.makeurl(
+            apiurl, ["build", obs_project, repos[0], archs[0], "_builddepinfo"]
+        )
+        dep_root = ET.fromstring(osc.connection.http_GET(dep_url).read())
+    except Exception:
+        return {}
+
+    # Build provided_by: {binary_name -> source_pkg} from <subpkg> elements.
+    provided_by: dict[str, str] = {}
+    for pkg_elem in dep_root.findall("package"):
+        src = pkg_elem.get("name", "")
+        if not src:
+            continue
+        for subpkg in pkg_elem.findall("subpkg"):
+            binary = (subpkg.text or "").strip()
+            if binary:
+                provided_by[binary] = src
+
+    # Build reverse dep map: for each <pkgdep> in source S, if that binary is
+    # provided by source A (A != S), then S depends on A -> reverse: A -> {S}.
+    reverse_deps: dict[str, set[str]] = {}
+    for pkg_elem in dep_root.findall("package"):
+        src = pkg_elem.get("name", "")
+        if not src:
+            continue
+        for pkgdep in pkg_elem.findall("pkgdep"):
+            binary = (pkgdep.text or "").strip()
+            provider = provided_by.get(binary)
+            if provider and provider != src:
+                reverse_deps.setdefault(provider, set()).add(src)
+
+    return reverse_deps
+
+
+def _create_project_skeleton(
+    apiurl: str,
+    obs_project_name: str,
+    project_path: Path,
+    dry_run: bool = False,
+    env_vars: dict[str, str] | None = None,
+) -> None:
+    """Create a bare OBS project (no repositories) if it does not already exist.
+
+    This is Stage 1 of a two-stage project creation process.  Creating projects
+    without repository entries avoids repository_access_failure errors caused by
+    forward references to sibling or child projects that have not been created
+    yet.  Stage 2 (_apply_project_config) fills in the full repository config
+    once every project in the tree exists.
+
+    If the project already exists, this is a no-op.
+    """
+    try:
+        osc.core.show_project_meta(apiurl, obs_project_name)
+        return  # project already exists
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            _obs_api_error(e, f"checking project {obs_project_name}")
+        # 404 → project does not exist, fall through to create it
+
+    project_config = _load_project_config_with_inheritance(project_path, env_vars)
+    root_el = ET.Element("project", name=obs_project_name)
+    ET.SubElement(root_el, "title").text = project_config.get("title", "")
+    ET.SubElement(root_el, "description").text = project_config.get("description", "")
+    ET.indent(root_el)
+    skeleton_meta = ET.tostring(root_el, encoding="unicode")
+
+    logger.debug(f"creating skeleton project: {obs_project_name}")
+    _print_pending(f"project  {obs_project_name}")
+    if not dry_run:
+        try:
+            with _silence_stdout():
+                osc.core.edit_meta(
+                    metatype="prj",
+                    path_args=(obs_project_name,),
+                    data=[skeleton_meta],
+                    force=False,
+                    apiurl=apiurl,
+                )
+        except urllib.error.HTTPError as e:
+            _obs_api_error(e, f"creating skeleton for {obs_project_name}")
+    _print_create(f"project  {obs_project_name}")
+
+
 def _fetch_obs_download_url(apiurl: str) -> str | None:
     """Return the download base URL configured on the OBS instance.
 
@@ -289,15 +396,20 @@ def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
 
 def _edit_project_meta(
     apiurl: str, obs_project_name: str, meta: str, force: bool
-) -> None:
-    """Call osc.core.edit_meta for a project, auto-retrying with force=True on
+) -> bool:
+    """Call osc.core.edit_meta for a project, auto-retrying with paths stripped on
     repository_access_failure.
 
-    During bootstrapping, repository paths may reference subprojects that don't
-    exist on OBS yet.  force=True bypasses the dependency check; subprojects are
-    created later in the sync loop.  The retry is only attempted when force is
-    False on the first call — if the caller already requested force=True the
-    error is surfaced immediately.
+    Returns True if paths had to be stripped (meaning the project needs a second
+    pass once sibling/child projects have their repositories configured).
+    Returns False when the full meta was accepted without modification.
+
+    During first-time bootstrapping, repository paths may reference sibling
+    projects whose repositories have not yet been configured on OBS.  Stripping
+    the paths lets OBS accept the meta; a second Stage-2 pass later re-applies
+    the full config once every project in the tree has its repositories set up.
+    The retry is only attempted when force is False on the first call — if the
+    caller already requested force=True the error is surfaced immediately.
     """
     try:
         with _silence_stdout():
@@ -308,6 +420,7 @@ def _edit_project_meta(
                 force=force,
                 apiurl=apiurl,
             )
+        return False
     except urllib.error.HTTPError as e:
         err_body: bytes = b""
         try:
@@ -320,11 +433,11 @@ def _edit_project_meta(
                 err_code = ET.fromstring(err_body).get("code", "")
             except ET.ParseError:
                 pass
-        if not force and err_code == "repository_access_failure":
-            # OBS rejects the meta because a referenced subproject doesn't
-            # exist yet.  Create the project with repository <path> elements
-            # stripped so OBS accepts it; the topo-sort loop will update it
-            # with the full config once the subprojects have been created.
+        if not force and err_code in ("repository_access_failure", "project_save_error"):
+            # OBS rejects the meta because a referenced project doesn't have
+            # its repositories configured yet.  Strip <path> elements and
+            # retry so OBS accepts the skeleton; a second Stage-2 pass will
+            # re-apply the full config once all projects have their repos set.
             logger.debug(
                 f"repository_access_failure on create, stripping paths and retrying: {obs_project_name}"
             )
@@ -347,10 +460,12 @@ def _edit_project_meta(
                     )
             except urllib.error.HTTPError as e2:
                 _obs_api_error(e2, f"writing project meta for {obs_project_name}")
+            return True  # paths were stripped; caller must schedule a retry
         else:
             _obs_api_error(
                 e, f"writing project meta for {obs_project_name}", body=err_body
             )
+    return False  # unreachable; _obs_api_error always raises
 
 
 def _apply_project_config(
@@ -361,8 +476,14 @@ def _apply_project_config(
     force: bool = False,
     dry_run: bool = False,
     env_vars: dict[str, str] | None = None,
-) -> None:
+) -> bool:
     """Create or update OBS project metadata and build config from project.yaml.
+
+    Returns True if the project meta had repository <path> elements stripped
+    due to repository_access_failure (meaning a second pass is needed once all
+    sibling/child projects have their repositories configured on OBS).
+    Returns False when the full meta was accepted without modification, or when
+    in dry-run mode (no actual writes happen).
 
     Skips the API call when the content already matches what OBS has, unless
     --force is given (which bypasses both the local comparison and OBS conflict checks).
@@ -384,6 +505,7 @@ def _apply_project_config(
     logger.debug(f"  meta XML:\n{meta}")
     current = b""
     project_meta_exists = True
+    paths_stripped = False
     _print_pending(f"project meta  {obs_project_name}")
     try:
         logger.debug(f"fetching project meta: {obs_project_name}")
@@ -399,12 +521,16 @@ def _apply_project_config(
     if not project_meta_exists:
         logger.debug(f"creating project meta: {obs_project_name}")
         if not dry_run:
-            _edit_project_meta(apiurl, obs_project_name, meta, force=False)
+            paths_stripped = _edit_project_meta(
+                apiurl, obs_project_name, meta, force=False
+            )
         _print_create(f"project meta  {obs_project_name}")
     elif force or not _project_meta_subset_equal(current, meta):
         logger.debug(f"updating project meta: {obs_project_name}")
         if not dry_run:
-            _edit_project_meta(apiurl, obs_project_name, meta, force=force)
+            paths_stripped = _edit_project_meta(
+                apiurl, obs_project_name, meta, force=force
+            )
         _print_update(f"project meta  {obs_project_name}")
     else:
         logger.debug(f"project meta unchanged: {obs_project_name}")
@@ -459,6 +585,8 @@ def _apply_project_config(
     else:
         logger.debug(f"project config unchanged: {obs_project_name}")
         _print_same(f"project config  {obs_project_name}")
+
+    return paths_stripped
 
 
 def _apply_package_config(

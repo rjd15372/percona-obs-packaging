@@ -1,9 +1,11 @@
 import re
 import sys
+import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import osc.conf
+import osc.core
 import yaml
 
 from .common import (
@@ -24,6 +26,7 @@ from .common import (
     resolve_project_path,
     _print_ok,
 )
+from .cmd_profile import _load_profile
 from .obs_api import _fetch_obs_download_url
 from .services import _git_head_sha
 
@@ -57,6 +60,98 @@ def _validate_subproject_refs(root: Path) -> list[tuple[Path, str]]:
                             f"(expected {target.relative_to(REPO_ROOT.parent)})",
                         )
                     )
+    return errors
+
+
+def _validate_project_path_refs(
+    root: Path,
+    env_vars: dict[str, str] | None,
+    apiurl: str,
+) -> list[tuple[Path, str]]:
+    """Validate project: path entries in project.yaml files against the live OBS.
+
+    For each ``project:`` entry (after env var substitution), verifies that:
+    1. The referenced OBS project exists on the server.
+    2. The referenced repository name exists in that project.
+
+    Entries whose ``project:`` or ``repository:`` value contains unresolvable
+    ``${VAR}`` tokens (env_vars is None or var is absent) are skipped.
+
+    Returns a list of (yaml_path, error_message) for each invalid reference.
+    The OBS project meta is fetched at most once per unique project name.
+    """
+    errors: list[tuple[Path, str]] = []
+
+    # Collect (yaml_path, resolved_project, resolved_repository) triples.
+    triples: list[tuple[Path, str, str]] = []
+    for yaml_path in sorted(root.rglob("project.yaml")):
+        config = load_yaml(yaml_path)
+        for repo in config.get("repositories", []):
+            for path_info in repo.get("paths", []):
+                raw_project = path_info.get("project")
+                if raw_project is None:
+                    continue  # subproject: entry, validated by _validate_subproject_refs
+                raw_repository = str(path_info.get("repository", ""))
+
+                # Resolve env vars in project name; skip if any var is absent.
+                proj_tokens = _ENV_VAR_RE.findall(raw_project)
+                if proj_tokens:
+                    if env_vars is None or any(t not in env_vars for t in proj_tokens):
+                        continue
+                    resolved_project = _ENV_VAR_RE.sub(
+                        lambda m: env_vars[m.group(1)], raw_project
+                    )
+                else:
+                    resolved_project = raw_project
+
+                # Resolve env vars in repository name; skip if any var is absent.
+                repo_tokens = _ENV_VAR_RE.findall(raw_repository)
+                if repo_tokens:
+                    if env_vars is None or any(t not in env_vars for t in repo_tokens):
+                        continue
+                    resolved_repository = _ENV_VAR_RE.sub(
+                        lambda m: env_vars[m.group(1)], raw_repository
+                    )
+                else:
+                    resolved_repository = raw_repository
+
+                triples.append((yaml_path, resolved_project, resolved_repository))
+
+    # Verify each (project, repository) pair against OBS, caching per project.
+    # project_repos[project] = set of repo names, or None if project not found.
+    project_repos: dict[str, set[str] | None] = {}
+    for yaml_path, project, repository in triples:
+        if project not in project_repos:
+            try:
+                raw = osc.core.show_project_meta(apiurl, project)
+                meta_bytes = raw if isinstance(raw, bytes) else b"".join(raw)
+                root_el = ET.fromstring(meta_bytes)
+                project_repos[project] = {
+                    r.get("name", "") for r in root_el.findall("repository")
+                }
+            except urllib.error.HTTPError as e:
+                project_repos[project] = None if e.code == 404 else None
+            except Exception:
+                project_repos[project] = None
+
+        repos = project_repos[project]
+        if repos is None:
+            errors.append(
+                (
+                    yaml_path,
+                    f"OBS project {project!r} not found — "
+                    "check env var values for project: path entries",
+                )
+            )
+        elif repository not in repos:
+            errors.append(
+                (
+                    yaml_path,
+                    f"repository {repository!r} not found in OBS project {project!r} — "
+                    "check env var values for repository: path entries",
+                )
+            )
+
     return errors
 
 
@@ -222,6 +317,16 @@ def cmd_project_verify(args) -> None:
     service_files = sorted(scan_root.rglob("obs/_service"))
     scm_errors = _validate_obs_scm_revisions(service_files)
 
+    # Validate project: path entries against the live OBS instance when a
+    # profile is available (provides the apiurl and env var values).
+    path_ref_errors: list[tuple[Path, str]] = []
+    if args.profile:
+        profile = _load_profile(args.profile)
+        apiurl = profile.get("apiurl", "")
+        if apiurl:
+            osc.conf.get_config(override_apiurl=apiurl)
+            path_ref_errors = _validate_project_path_refs(scan_root, env_vars, apiurl)
+
     for yaml_path, msg in ref_errors:
         rel = yaml_path.relative_to(REPO_ROOT.parent)
         print(f"error: {rel}: {msg}", file=sys.stderr)
@@ -237,7 +342,11 @@ def cmd_project_verify(args) -> None:
             file=sys.stderr,
         )
 
-    if ref_errors or env_errors or scm_errors:
+    for yaml_path, msg in path_ref_errors:
+        rel = yaml_path.relative_to(REPO_ROOT.parent)
+        print(f"error: {rel}: {msg}", file=sys.stderr)
+
+    if ref_errors or env_errors or scm_errors or path_ref_errors:
         sys.exit(1)
     _print_ok("project verify: all checks passed")
 

@@ -3,7 +3,6 @@ from pathlib import Path
 
 from .common import (
     REPO_ROOT,
-    _load_project_config_with_inheritance,
     find_packages,
     is_package,
     load_yaml,
@@ -89,52 +88,3 @@ def _iter_project_chain(obs_project: str, project_path: Path):
         path = path.parent
         proj = proj.rsplit(":", 1)[0]
     yield from reversed(chain)
-
-
-def _topo_sort_projects(
-    all_projects: dict[str, tuple[str, Path]], rootprj: str
-) -> list[str]:
-    """Return project keys sorted so 'subproject:' dependencies come before the
-    projects that reference them.  Depth (deepest first) is the secondary key
-    within the same dependency tier.
-    """
-    local_keys = set(all_projects)
-    # Map OBS project name → raw_proj key (handles 'name:' overrides in project.yaml)
-    name_to_raw: dict[str, str] = {
-        prj_name: raw_proj for raw_proj, (prj_name, _) in all_projects.items()
-    }
-    # Build dependency graph: raw_proj → set of raw_proj keys it depends on
-    deps: dict[str, set[str]] = {p: set() for p in local_keys}
-    for raw_proj, (_, proj_path) in all_projects.items():
-        config = _load_project_config_with_inheritance(proj_path)
-        for repo in config.get("repositories", []):
-            for path_info in repo.get("paths", []):
-                if "subproject" in path_info:
-                    dep_name = f"{rootprj}:{path_info['subproject']}"
-                    dep_key = name_to_raw.get(dep_name) or (
-                        dep_name if dep_name in local_keys else None
-                    )
-                    if dep_key and dep_key != raw_proj:
-                        deps[raw_proj].add(dep_key)
-    # Kahn's topological sort; colon count (ascending) is the secondary tie-breaker
-    # so shallower/parent projects are created before their children within the
-    # same dependency tier — OBS requires parent projects to exist first.
-    in_degree = {p: len(deps[p]) for p in local_keys}
-    ready = sorted(
-        [p for p, d in in_degree.items() if d == 0], key=lambda x: x.count(":")
-    )
-    result: list[str] = []
-    while ready:
-        p = ready.pop(0)
-        result.append(p)
-        for other in local_keys:
-            if p in deps[other]:
-                in_degree[other] -= 1
-                if in_degree[other] == 0:
-                    ready.append(other)
-                    ready.sort(key=lambda x: x.count(":"))
-    # Append any remaining nodes (cycle guard — should not happen in practice)
-    result.extend(
-        sorted((p for p in local_keys if in_degree[p] > 0), key=lambda x: x.count(":"))
-    )
-    return result
