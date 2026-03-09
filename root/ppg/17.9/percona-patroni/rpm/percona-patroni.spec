@@ -36,6 +36,7 @@ Release:        1%{?dist}
 License:        MIT
 Source0:        %{name}-%{version}.tar.gz
 Source1:        %{sname}.service
+Patch0:         disable-sphinx-github-style.patch
 URL:            https://github.com/zalando/%{sname}
 
 BuildRequires:  python%{python3_pkgversion}-setuptools python%{python3_pkgversion}-devel
@@ -187,6 +188,7 @@ Meta package to pull zookeeper related dependencies for patroni
 
 %prep
 %setup -q
+%patch0 -p1
 %build
 %{__ospython} setup.py build
 
