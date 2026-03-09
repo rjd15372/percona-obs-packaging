@@ -62,7 +62,8 @@ from .targets import _iter_project_chain, _resolve_targets
 # Matches the standard sync commit message: sync: <branch>@<sha> (<detail>)
 _SYNC_MSG_RE = re.compile(r"^sync: [^@]+@([0-9a-f]+) \((.+)\)$")
 # Matches a branch aggregate message: branch: <profile> (<obs_project>/<package>)
-_BRANCH_MSG_RE = re.compile(r"^branch: \S+ \((.+)/[^/]+\)$")
+# Group 1 = profile name, group 2 = source OBS project.
+_BRANCH_MSG_RE = re.compile(r"^branch: (\S+) \((.+)/[^/]+\)$")
 
 
 _OBS_SUBSTITUTABLE = {"_service", "_aggregate", "_link"}
@@ -401,8 +402,12 @@ def cmd_sync(args):
     #   "promote"     — upload full obs/ sources
     decisions: dict[tuple[str, str], str] = {}
     branch_project_for: dict[tuple[str, str], str] = {}
+    # profile that was used in the branch: comment (plain-push path only).
+    branch_profile_for: dict[tuple[str, str], str] = {}
     # pkg_key_by_name[(pkg_name)] → key, used for dep propagation lookups.
     pkg_key_by_name: dict[str, tuple[str, str]] = {}
+    # Cache of loaded profiles to avoid repeated file reads within Phase 1.
+    _profile_apiurl_cache: dict[str, str] = {}
 
     _print_action("planning: checking sync decisions")
     for obs_project, package_path in targets:
@@ -436,17 +441,33 @@ def cmd_sync(args):
             if prior_comment:
                 bm = _BRANCH_MSG_RE.match(prior_comment)
                 if bm:
-                    src_proj = bm.group(1)
+                    branch_profile_name = bm.group(1)
+                    src_proj = bm.group(2)
+                    # Resolve the apiurl for this branch profile; it may be on a
+                    # different OBS instance (cross-instance branching).
+                    if branch_profile_name not in _profile_apiurl_cache:
+                        try:
+                            bp = _load_profile(branch_profile_name)
+                            _profile_apiurl_cache[branch_profile_name] = (
+                                bp.get("apiurl") or apiurl or ""
+                            )
+                        except SystemExit:
+                            logger.debug(
+                                f"branch profile {branch_profile_name!r} not found,"
+                                f" falling back to target apiurl for {src_proj}"
+                            )
+                            _profile_apiurl_cache[branch_profile_name] = apiurl or ""
+                    src_apiurl = _profile_apiurl_cache[branch_profile_name]
                     if _content_matches_branch(
-                        apiurl, src_proj, package_path.name, obs_dir
+                        src_apiurl, src_proj, package_path.name, obs_dir
                     ):
                         decisions[key] = "skip_branch"
                     else:
                         decisions[key] = "promote"
-                    # Always record the source project so that Phase 2 dep
-                    # queries include the source project's builddepinfo,
-                    # regardless of whether the decision is skip_branch or promote.
+                    # Always record the source project and profile so that Phase 2
+                    # dep queries use the correct OBS instance.
                     branch_project_for[key] = src_proj
+                    branch_profile_for[key] = branch_profile_name
                 else:
                     decisions[key] = "promote"
             else:
@@ -465,8 +486,8 @@ def cmd_sync(args):
         # for dep-promotion decisions.
         # Without --branch-from, query the target projects on the target OBS.
         local_pkg_names = set(pkg_key_by_name.keys())
+        src_projects_by_apiurl: dict[str, set[str]] = {}
         if branch_rootprj:
-            dep_apiurl = branch_apiurl
             # Include all branch projects, not just those with aggregate decisions.
             # Packages that are "promote" may live in a branch project (e.g. builddep)
             # whose builddepinfo is needed to detect binaries they provide.
@@ -475,17 +496,33 @@ def cmd_sync(args):
                 for key in decisions
             }
         else:
-            dep_apiurl = apiurl
-            # Include source projects from "skip_branch" decisions: these are the
-            # projects that hold the existing aggregates and have build results.
-            # Target projects are typically empty at this point.
+            # Source projects may live on a different OBS instance (cross-instance
+            # branching).  Group them by the apiurl resolved from the branch profile
+            # recorded in Phase 1, and query each OBS instance separately.
+            # Target projects (which may have real source uploads) are queried at
+            # the target apiurl.
+            src_projects_by_apiurl = {apiurl or "": {key[0] for key in decisions}}
+            for key, src_proj in branch_project_for.items():
+                profile_name = branch_profile_for.get(key, "")
+                src_apiurl = _profile_apiurl_cache.get(profile_name) or apiurl or ""
+                src_projects_by_apiurl.setdefault(src_apiurl, set()).add(src_proj)
             dep_projects = {key[0] for key in decisions} | set(
                 branch_project_for.values()
             )
         _print_action(
             f"planning: checking build dependencies ({len(dep_projects)} project(s))"
         )
-        fwd_deps = _fetch_combined_depinfo(dep_apiurl, dep_projects, local_pkg_names)
+        if branch_rootprj:
+            fwd_deps = _fetch_combined_depinfo(
+                branch_apiurl, dep_projects, local_pkg_names
+            )
+        else:
+            all_fwd_deps: dict[str, set[str]] = {}
+            for q_apiurl, q_projects in src_projects_by_apiurl.items():
+                partial = _fetch_combined_depinfo(q_apiurl, q_projects, local_pkg_names)
+                for pkg, deps in partial.items():
+                    all_fwd_deps.setdefault(pkg, set()).update(deps)
+            fwd_deps = all_fwd_deps
         logger.debug(
             f"dep-promote: builddepinfo covers {len(fwd_deps)} local packages"
             f" with known local build deps; local_pkg_names={local_pkg_names}"

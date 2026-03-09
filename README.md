@@ -245,6 +245,35 @@ Preview what would be promoted without writing to OBS:
 ./percona-obs -P test sync promote --dry-run
 ```
 
+### Build dependency propagation
+
+When branching, packages that depend on a changed package must also be rebuilt from
+source — otherwise they might link against stale binaries from the branch project.
+`percona-obs` handles this automatically.
+
+After the initial changed/unchanged classification, `percona-obs` queries OBS
+`_builddepinfo` for the branch project to determine which packages build-depend on
+which others. It then applies **bidirectional dep propagation**:
+
+- If package **A** is promoted (uploaded with sources), every package that **depends
+  on A** (directly or transitively) is also promoted.
+- Conversely, every package that **A depends on** is also promoted, so A builds
+  against fresh locally-controlled binaries rather than the branch copy.
+
+This fixed-point iteration continues until no more promotions are triggered. The
+result is a minimal set of packages that must be built from source, with all others
+remaining as lightweight aggregates.
+
+**Example**: if `golang-1.25` has changed locally, `percona-telemetry-agent` and
+`etcd` (which both build-depend on it) are automatically promoted even if their own
+source files are identical to what was last synced to the branch project.
+
+Use `build dependency` to inspect these relationships before syncing:
+
+```sh
+./percona-obs -P local build dependency
+```
+
 ### How unchanged packages are detected
 
 `percona-obs` uses a two-level decision for each package:
@@ -326,6 +355,40 @@ Scope can be narrowed the same way as other commands:
 ```
 
 Set `NO_COLOR=1` to disable color output.
+
+### Show build dependency tree
+
+```sh
+./percona-obs -P local build dependency
+```
+
+Queries OBS `_builddepinfo` for all packages and prints a dependency tree grouped by
+**root packages** — packages that no other local package depends on. Each root package
+is shown with its direct and transitive build dependencies indented beneath it.
+Packages in the tree are annotated with the OBS project they belong to.
+
+```
+etcd (home:Admin:percona:ppg:17.9)
+└── golang-1.25 (home:Admin:percona:builddep)
+
+percona-pg-telemetry (home:Admin:percona:ppg:17.9)
+├── percona-postgresql-common (home:Admin:percona:ppg:17.9)
+└── percona-postgresql17 (home:Admin:percona:ppg:17.9)
+
+percona-telemetry-agent (home:Admin:percona)
+└── golang-1.25 (home:Admin:percona:builddep)
+
+obs-service-recompress (home:Admin:percona:builddep)
+obs-service-set_version (home:Admin:percona:builddep)
+obs-service-tar_scm (home:Admin:percona:builddep)
+```
+
+Packages with no local build dependencies and that nothing else depends on are listed
+at the bottom as isolated packages. Scope can be narrowed to a subproject:
+
+```sh
+./percona-obs -P local build dependency ppg:17.9
+```
 
 ---
 

@@ -1,3 +1,4 @@
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import osc.conf
 import osc.connection
 import osc.core
 
+from .cmd_profile import _load_profile
 from .common import (
     _BOLD,
     _CYAN,
@@ -22,8 +24,12 @@ from .common import (
     resolve_project_path,
     REPO_ROOT,
 )
-from .obs_api import _fetch_combined_depinfo
+from .obs_api import _fetch_combined_depinfo, _fetch_obs_package_latest_comment
 from .targets import _resolve_targets
+
+# Must match the same pattern as _BRANCH_MSG_RE in cmd_sync.py.
+# Group 1 = profile name, group 2 = source OBS project.
+_BRANCH_MSG_RE = re.compile(r"^branch: (\S+) \((.+)/[^/]+\)$")
 
 # ---------------------------------------------------------------------------
 # Build-status helpers
@@ -355,17 +361,54 @@ def cmd_build_dependency(args) -> None:
 
     # Resolve OBS project names and build the pkg → project mapping.
     pkg_to_project: dict[str, str] = {}
-    all_obs_projects: set[str] = set()
+    pkg_obs_name: list[tuple[str, str]] = []  # (obs_name, pkg_name) for every target
     for obs_project, package_path in targets:
         project_config = load_yaml(package_path.parent / "project.yaml")
         obs_name = project_config.get("name") or obs_project
         pkg_to_project[package_path.name] = obs_name
-        all_obs_projects.add(obs_name)
+        pkg_obs_name.append((obs_name, package_path.name))
 
     all_pkg_names = set(pkg_to_project.keys())
 
-    # Fetch build dependency info from OBS.
-    fwd_deps = _fetch_combined_depinfo(apiurl, all_obs_projects, all_pkg_names)
+    # For each package, check the OBS revision comment to detect aggregates.
+    # A project may contain a mix of promoted packages (sync: comment) and
+    # aggregate packages (branch: comment), so we check EVERY package rather
+    # than just a representative.  We collect both the target project (for
+    # promoted packages) and source projects (for aggregate packages) so that
+    # _builddepinfo is queried from the correct OBS instance for each.
+    profile_apiurl_cache: dict[str, str] = {}
+    query_projects_by_apiurl: dict[str, set[str]] = {}
+    for obs_name, pkg_name in pkg_obs_name:
+        comment = _fetch_obs_package_latest_comment(apiurl, obs_name, pkg_name)
+        if comment:
+            bm = _BRANCH_MSG_RE.match(comment)
+            if bm:
+                profile_name = bm.group(1)
+                src_project = bm.group(2)
+                if profile_name not in profile_apiurl_cache:
+                    try:
+                        profile = _load_profile(profile_name)
+                        profile_apiurl_cache[profile_name] = (
+                            profile.get("apiurl") or apiurl or ""
+                        )
+                    except SystemExit:
+                        logger.debug(
+                            f"dep: profile {profile_name!r} not found,"
+                            f" falling back to target apiurl for {obs_name}"
+                        )
+                        profile_apiurl_cache[profile_name] = apiurl or ""
+                src_apiurl = profile_apiurl_cache[profile_name]
+                query_projects_by_apiurl.setdefault(src_apiurl, set()).add(src_project)
+                continue
+        # Not an aggregate (promoted or freshly synced): query the target OBS.
+        query_projects_by_apiurl.setdefault(apiurl or "", set()).add(obs_name)
+
+    # Fetch build dependency info from each OBS instance and merge.
+    fwd_deps: dict[str, set[str]] = {}
+    for q_apiurl, q_projects in query_projects_by_apiurl.items():
+        partial = _fetch_combined_depinfo(q_apiurl, q_projects, all_pkg_names)
+        for pkg, deps in partial.items():
+            fwd_deps.setdefault(pkg, set()).update(deps)
 
     if not fwd_deps:
         print(_col(_DIM, "(no build dependency information available)"))

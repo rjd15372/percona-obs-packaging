@@ -276,7 +276,7 @@ Options:
 - `--no-cache` — bypass both cache levels; always run obs_scm and manual services from scratch.
 - `--non-recursive` — only sync packages directly under the specified project; do not descend into sub-projects.
 - `--project-only` — only sync project configuration (meta and build config); skip all package syncing.
-- `--branch-from PROFILE` — for each package unchanged since the given profile's last sync, upload only an `_aggregate` file that reuses pre-built binaries from that profile's OBS project instead of uploading sources. Both profiles must share the same OBS instance. The aggregate message format is `branch: <profile> (<source_project>/<package>)`.
+- `--branch-from PROFILE` — for each package unchanged since the given profile's last sync, upload only an `_aggregate` file that reuses pre-built binaries from that profile's OBS project instead of uploading sources. The branch profile may target a different OBS instance. After the initial changed/unchanged classification, a second phase queries OBS `_builddepinfo` and automatically promotes any additional packages whose build dependencies or dependents were promoted (bidirectional fixed-point propagation). The aggregate message format is `branch: <profile> (<source_project>/<package>)`.
 - `-m MSG` / `--message MSG` — commit message recorded in the OBS source revision. When omitted, a message is generated automatically:
   - Normal: `sync: <branch>@<short-sha> (<remote_url>)`
   - With `--dirty`: `sync: <branch>@<short-sha> (local changes on <hostname>)`
@@ -321,6 +321,36 @@ If a `_service` file exists, extract the *upstream* `obs_scm` service — the on
 5. If `obs_commit != remote_head_sha` → **changed** (upstream has moved). If equal → **unchanged**.
 
 If zero or more than one upstream `obs_scm` services are found, sub-check 2 is skipped and the MD5 match alone is sufficient.
+
+#### Phase 2 — Build dependency propagation
+
+After Phase 1 classifies every package as `"aggregate"`, `"skip_branch"`, or
+`"promote"`, Phase 2 enforces build dependency correctness by promoting any package
+whose build dependencies or dependents have been promoted.
+
+**Why this is necessary**: if package **A** (e.g. `golang-1.25`) has local changes and
+is promoted, packages that build-depend on A (e.g. `percona-telemetry-agent`, `etcd`)
+must also be promoted — otherwise they would link against the old branch binaries and
+not the new A. Conversely, packages that A depends on are also promoted so A builds
+against locally-controlled sources rather than the branch copy.
+
+**How it works**:
+1. Determine which OBS projects to query for `_builddepinfo`:
+   - With `--branch-from`: query the **branch OBS** (`branch_apiurl`) for all branch
+     projects derived from every package in scope (not just the ones with `"aggregate"`
+     decisions), including e.g. `<branch_rootprj>:builddep`.
+   - Without `--branch-from` (plain push over a previously branched env): query the
+     **target OBS** (`apiurl`) for the union of target projects and any source projects
+     recorded from `branch:` revision comments (`branch_project_for.values()`).
+2. Call `_fetch_combined_depinfo(dep_apiurl, dep_projects, local_pkg_names)` to build:
+   - `provided_by`: binary package name → source OBS package name (multibuild `:flavor`
+     suffixes are stripped from source names at construction time).
+   - `fwd_deps[A]`: set of local packages that **A** build-depends on.
+3. Run fixed-point bidirectional propagation until stable:
+   - **Forward**: if B is in `fwd_deps[A]` and B is promoted → promote A.
+   - **Backward**: if A is promoted and B is in `fwd_deps[A]` → promote B.
+4. All packages whose decision was changed to `"promote"` by Phase 2 log a message
+   indicating which dep triggered them.
 
 #### Plain `sync push` with a `branch:` aggregate already on OBS
 
@@ -460,6 +490,33 @@ Status symbols (color output disabled with `NO_COLOR=1`):
 For multibuild packages, when all flavors of a repository share the same status the flavor tags are shown inline (e.g. `[:17]`). When flavors differ, each expands to its own sub-line under the repository.
 
 When multiple architectures are configured for the same repository, the highest-priority (most actionable) status is kept per flavor; arch details are not shown.
+
+### `build dependency [project]`
+
+Queries OBS `_builddepinfo` for all packages in scope and prints a build dependency
+tree. Packages are grouped by **root packages** (packages that no other local package
+depends on). Each root package is a tree root; its direct and transitive build
+dependencies are indented beneath it with box-drawing characters.
+
+| Call form | Effect |
+|---|---|
+| `build dependency` | Dependency tree for all packages under `root/` |
+| `build dependency <project>` | Restrict to packages under the given project |
+
+**Output format**: each line is `<pkg> (<obs_project>)`. Root packages (tree roots) are
+printed in bold. Packages with no local dependencies and nothing depending on them are
+listed after all trees as isolated packages. Cycles are detected and printed as
+`(cycle)` leaf nodes.
+
+**Implementation** (`cmd_build_dependency` in `cmd_build.py`):
+1. Scan all packages under scope with `find_packages`.
+2. Collect all OBS project names from those packages.
+3. Call `_fetch_combined_depinfo(apiurl, dep_projects, local_pkg_names)` to build
+   `provided_by` (binary → source package) and `fwd_deps` (source package → set of
+   local packages it depends on).
+4. Identify root packages: any package **not** present in any `fwd_deps` value set.
+5. Print trees with `_print_dep_tree()`, then isolated packages (no deps, not depended
+   on by anything).
 
 ### `project verify [project] [-P <profile>] [-e KEY:VALUE ...]`
 
@@ -678,4 +735,4 @@ osc buildlog <project> <package> <repo> <arch>
 | Third-party infrastructure service | `ppg/17.9/etcd/` |
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
-| Management script | `percona-obs` (commands: `sync push`, `sync delete`, `sync promote`, `build trigger`, `build status`, `profile create`, `profile list`, `project verify`) |
+| Management script | `percona-obs` (commands: `sync push`, `sync delete`, `sync promote`, `build trigger`, `build status`, `build dependency`, `profile create`, `profile list`, `project verify`) |
