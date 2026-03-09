@@ -1,0 +1,362 @@
+# Adding a New Package to `root/ppg/17.9`
+
+This guide explains how to port a package from the
+[`percona/postgres-packaging`](https://github.com/percona/postgres-packaging/tree/17.9)
+repository into this OBS packaging repository.
+
+---
+
+## Background
+
+`percona/postgres-packaging` (branch `17.9`) is a **CI builder** repository. Each
+package directory there contains:
+
+- A `*_builder.sh` — orchestrates fetching the upstream source, applying Percona
+  overrides, and building RPMs/DEBs on a CI host.
+- A Percona `.spec` file for RPM.
+- Minimal DEB files: `control`, `rules`, sometimes `.install` files.
+- Optional patch files (e.g. `spec.patch`, `rules.patch`).
+- `versions.sh` at the root — defines all version constants used by every builder.
+
+**We do not run the builder scripts.** Instead, we store the *merged result* of
+what the builder would assemble and let OBS fetch sources and build directly.
+
+---
+
+## Resulting Package Structure
+
+Every package under `root/ppg/17.9/` follows this layout:
+
+```
+root/ppg/17.9/<package-name>/
+├── debian/
+│   ├── debian.dsc          # OBS-specific DSC (see below)
+│   ├── changelog           # Minimal Debian changelog
+│   ├── compat              # debhelper compat level (9 or 10)
+│   ├── control             # Package definitions (Percona version from postgres-packaging)
+│   ├── copyright           # Upstream license text
+│   ├── rules               # Build rules (Percona version from postgres-packaging)
+│   ├── source/
+│   │   ├── format          # "3.0 (quilt)" or "3.0 (native)"
+│   │   └── options         # extend-diff-ignore directives
+│   ├── [pkg].install       # File installation lists (optional)
+│   ├── [pkg].postinst      # Post-install scripts (optional)
+│   ├── [pkg].prerm         # Pre-remove scripts (optional)
+│   └── patches/            # Quilt patch series (only for quilt-format packages)
+│       ├── series
+│       └── *.patch
+├── rpm/
+│   ├── [package-name].spec # RPM spec from postgres-packaging
+│   ├── [package-name].service  # systemd unit (if applicable)
+│   └── [other files]       # Config files, patches, extra sources cited in the spec
+└── obs/
+    ├── _service            # OBS service file (fetches packaging + upstream source)
+    └── _multibuild         # Only for PostgreSQL extensions (multi-PG-version builds)
+```
+
+---
+
+## Step-by-Step Guide
+
+### Step 1 — Understand the upstream package
+
+Open the `percona/postgres-packaging` directory for the package you want to port,
+e.g. `patroni/`.
+
+Read `versions.sh` to find the relevant version constants:
+
+```bash
+# From versions.sh (branch 17.9)
+PATRONI_VERSION=4.1.0
+```
+
+Read `*_builder.sh` and note:
+
+| Variable | Meaning |
+|---|---|
+| `PKGNAME_SRC_REPO` | Upstream source git URL |
+| `PKGNAME_SRC_BRANCH` or `PKGNAME_SRC_TAG` | Tag/branch to check out |
+| `PKGNAME_SRC_REPO_DEB` | External Debian packaging repo (if any) |
+| `PKG_RAW_URL/pkgname/` | Files fetched from postgres-packaging itself |
+
+The builder's `get_sources()` function shows:
+1. Which external **DEB packaging repo** is cloned and at what tag.
+2. Which files from `postgres-packaging` **replace** the ones from that DEB repo.
+3. Which `sed` substitutions are applied (e.g. `@@PGMAJOR@@` → `17`).
+4. What ends up in `rpm/` (usually the `.spec`, `.service`, config files).
+
+---
+
+### Step 2 — Create the directory skeleton
+
+```bash
+PKG=<package-name>
+mkdir -p root/ppg/17.9/$PKG/debian/source
+mkdir -p root/ppg/17.9/$PKG/rpm
+mkdir -p root/ppg/17.9/$PKG/obs
+```
+
+---
+
+### Step 3 — Assemble `debian/`
+
+#### 3a. Get the base Debian packaging
+
+If the builder clones an **external DEB packaging repo**, clone it locally at the
+same tag the builder uses, then copy its `debian/` directory as your starting
+point:
+
+```bash
+git clone <PKGNAME_SRC_REPO_DEB> /tmp/deb-base
+cd /tmp/deb-base && git checkout <DEB_PACKAGING_TAG>
+cp -r /tmp/deb-base/debian/* root/ppg/17.9/$PKG/debian/
+```
+
+If there is no external DEB packaging repo (the builder creates the `debian/`
+directory from scratch), construct it manually using the files available in
+`postgres-packaging/<pkg>/`.
+
+#### 3b. Apply Percona overrides
+
+The builder always replaces certain files from the external DEB repo with Percona
+versions. Copy those from `postgres-packaging/<pkg>/`:
+
+```bash
+# Always overridden:
+cp <postgres-packaging>/<pkg>/control  root/ppg/17.9/$PKG/debian/control
+cp <postgres-packaging>/<pkg>/rules    root/ppg/17.9/$PKG/debian/rules
+
+# Apply sed substitutions the builder performs, e.g.:
+sed -i "s/@@PGMAJOR@@/17/g" root/ppg/17.9/$PKG/debian/control
+```
+
+Apply any patch files listed in the builder (e.g. `rules.patch`):
+
+```bash
+patch -p1 < <postgres-packaging>/<pkg>/rules.patch
+```
+
+#### 3c. Add OBS-required files
+
+**`debian/compat`** — debhelper compat level:
+
+```
+10
+```
+
+**`debian/changelog`** — a minimal changelog is sufficient. The format must be
+valid Debian changelog syntax. The version here is a placeholder; OBS sets the
+real version from the upstream source tag.
+
+```
+<source-name> (1.0.0-1) unstable; urgency=low
+
+  * Initial build.
+
+ -- Percona Development Team <info@percona.com>  Mon, 01 Jan 2024 00:00:00 +0000
+```
+
+**`debian/source/format`** — choose based on whether Debian patches are applied
+on top of the upstream source:
+
+- `3.0 (quilt)` — use when the `debian/patches/` directory exists and quilt
+  patches are applied to the upstream source during build.
+- `3.0 (native)` — use when there are no upstream patches (all changes are
+  already in the source tree or applied by the build rules directly).
+
+**`debian/source/options`** — tells `dpkg-source` to ignore certain directories
+when building the diff. Always ignore `rpm/`; also ignore `vendor/` for Go
+packages:
+
+```
+# Standard packages:
+extend-diff-ignore = rpm/
+
+# Go packages (etcd-style):
+extend-diff-ignore = (vendor/|rpm/)
+```
+
+---
+
+### Step 4 — Create `debian/debian.dsc`
+
+This is the key OBS-specific file. It is **not** a standard Debian DSC — it is
+an input for OBS's `debtransform` service. OBS fetches it (via the `extract:
+*.dsc` parameter in `_service`) and uses it to know what tarballs to bundle into
+the generated source package.
+
+The `Version:` field is a **placeholder** (`1.0.0`) — OBS replaces it at service
+run time using the version extracted from the upstream source tag.
+
+**Template:**
+
+```
+Format: 3.0 (quilt)
+Source: <source-name>
+Binary: <space-separated list of all binary packages from control>
+Architecture: <any|all|any all>
+Version: 1.0.0
+Maintainer: Percona Development Team <info@percona.com>
+Build-Depends: <copy from control's Build-Depends>
+Debtransform-Release: 1
+Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
+```
+
+**`Debtransform-Files-Tar`** must list every tarball OBS needs to produce the
+source package. At minimum: `debian.tar.gz rpm.tar.gz`. For Go packages that use
+vendored modules, also list those vendor tarballs (see etcd as an example):
+
+```
+Debtransform-Files-Tar: debian.tar.gz vendor-server.tar.gz vendor-etcdctl.tar.gz vendor-etcdutl.tar.gz rpm.tar.gz
+```
+
+For PostgreSQL extension packages that use multibuild, the `Binary:` and
+`Build-Depends:` fields use the `@BUILD_FLAVOR@` placeholder which OBS expands
+per flavor:
+
+```
+Binary: percona-pg-telemetry@BUILD_FLAVOR@
+Build-Depends: debhelper (>= 9), percona-postgresql-server-dev-@BUILD_FLAVOR@
+```
+
+---
+
+### Step 5 — Assemble `rpm/`
+
+Take the `.spec` file directly from `postgres-packaging/<pkg>/`. Then add every
+additional file referenced in the spec's `Source*` lines:
+
+```spec
+Source0:  %{name}-%{version}.tar.gz   # generated by OBS — do NOT add this
+Source1:  patroni.service             # ← add this
+```
+
+For `patroni`, the builder also creates `patroni-customizations.tar.gz` by
+packing together `patroni.service`, `patroni-watchdog.service`, and
+`postgres-telia.yml`. If the spec references this tarball as a Source, include it
+pre-built in `rpm/`.
+
+Any patches applied to the spec via `spec.patch` in the builder should be applied
+manually — the resulting patched spec is what goes into `rpm/`.
+
+---
+
+### Step 6 — Create `obs/_service`
+
+**Standard pattern (all packages):**
+
+```xml
+<services>
+  <service name="obs_scm">
+    <param name="url">https://github.com/rjd15372/percona-obs-packaging.git</param>
+    <param name="scm">git</param>
+    <param name="revision">main</param>
+    <param name="version">_none_</param>
+    <param name="extract">*.dsc</param>
+    <param name="subdir">root/ppg/17.9/<PKG>/debian</param>
+    <param name="filename">debian</param>
+  </service>
+
+  <service name="obs_scm">
+    <param name="url">https://github.com/rjd15372/percona-obs-packaging.git</param>
+    <param name="scm">git</param>
+    <param name="revision">main</param>
+    <param name="version">_none_</param>
+    <param name="extract">*</param>
+    <param name="subdir">root/ppg/17.9/<PKG>/rpm</param>
+    <param name="filename">rpm</param>
+  </service>
+
+  <!-- Upstream source: use 'version' when you know the exact version string -->
+  <service name="obs_scm">
+    <param name="url"><UPSTREAM_GIT_URL></param>
+    <param name="scm">git</param>
+    <param name="revision"><TAG_OR_BRANCH></param>
+    <param name="version"><VERSION_STRING></param>
+    <param name="filename"><PKG></param>
+  </service>
+
+  <service mode="buildtime" name="tar" />
+  <service mode="buildtime" name="recompress">
+    <param name="file">*.tar</param>
+    <param name="compression">gz</param>
+  </service>
+  <service mode="buildtime" name="set_version" />
+</services>
+```
+
+**When the version is derived from a git tag** (e.g. tag `v4.1.0` → version
+`4.1.0`), use `versionformat` + `versionrewrite-pattern` instead of `version`:
+
+```xml
+  <service name="obs_scm">
+    <param name="url">https://github.com/zalando/patroni.git</param>
+    <param name="scm">git</param>
+    <param name="revision">v4.1.0</param>
+    <param name="versionformat">@PARENT_TAG@</param>
+    <param name="versionrewrite-pattern">v(.*)</param>
+  </service>
+```
+
+**For Go packages with vendored modules** (e.g. etcd), add `go_modules` services
+after the main services. These run in `mode="manual"` (i.e. they are run
+separately to pre-populate the vendor tarballs):
+
+```xml
+  <service name="go_modules" mode="manual">
+    <param name="archive">*etcd-*.obscpio</param>
+    <param name="subdir">server</param>
+    <param name="vendorname">vendor-server</param>
+  </service>
+```
+
+---
+
+### Step 7 — PostgreSQL extensions: add `obs/_multibuild`
+
+If the package is a PostgreSQL extension that should build against multiple PG
+versions, add `obs/_multibuild`:
+
+```xml
+<multibuild buildemptyflavor="false">
+  <flavor>17</flavor>
+</multibuild>
+```
+
+This causes OBS to build the package once per flavor, substituting `@BUILD_FLAVOR@`
+with `17` in the `debian.dsc`, `debian/control`, and `debian/rules` at build
+time.
+
+---
+
+## Quick Reference: Patterns by Package Type
+
+| Package type | `source/format` | `debian.dsc` extra tarballs | `_multibuild` | Example |
+|---|---|---|---|---|
+| Plain app | `3.0 (quilt)` | none | no | `etcd` |
+| PG extension | `3.0 (native)` | none | yes | `percona-pg-telemetry` |
+| Go app with vendored deps | `3.0 (quilt)` | `vendor-*.tar.gz` | no | `etcd` |
+| Upstream DEB packaging patched | `3.0 (quilt)` | none | no | `percona-postgresql17` |
+| Standalone package, no upstream patches | `3.0 (native)` | none | no | `percona-postgresql-common` |
+
+---
+
+## Common Pitfalls
+
+- **`debian.dsc` version is a placeholder.** Always use `Version: 1.0.0`. OBS
+  overwrites it with the version it extracts from the upstream source.
+- **`Debtransform-Files-Tar` must be complete.** Every tarball that OBS needs to
+  assemble the source package must be listed. Forgetting `rpm.tar.gz` will cause
+  OBS to produce a DEB source package with no RPM spec.
+- **`source/options` must ignore `rpm/`.** Without `extend-diff-ignore = rpm/`,
+  `dpkg-source` will include the RPM directory in the Debian diff, causing build
+  failures.
+- **Apply all builder sed substitutions manually.** The builder replaces
+  `@@PGMAJOR@@`, `@@PGMAJORVERSION@@`, etc. at runtime. In our repo those
+  substitutions must already be applied before committing (or use `@BUILD_FLAVOR@`
+  if it is a multibuild extension that needs per-flavor substitution by OBS).
+- **The spec's `Source0` tarball is auto-generated by OBS.** Never add
+  `<pkg>-<version>.tar.gz` to `rpm/`. OBS produces it from the upstream `obs_scm`
+  fetch. Only add the *supplementary* sources listed as `Source1`, `Source2`, etc.
+- **`obs/_service` `revision` should be `main`** (not a feature branch) once the
+  packaging is ready to build in OBS.
