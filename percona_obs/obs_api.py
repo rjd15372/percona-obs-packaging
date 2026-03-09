@@ -174,6 +174,21 @@ def _fetch_obs_subproject_names(apiurl: str, rootprj: str) -> set[str]:
         return set()
 
 
+def _fetch_obs_download_url(apiurl: str) -> str | None:
+    """Return the download base URL configured on the OBS instance.
+
+    Fetches GET /configuration and reads the <download_url> element.
+    Returns None on any error or if the element is absent.
+    """
+    url = osc.core.makeurl(apiurl, ["configuration"])
+    try:
+        root = ET.fromstring(osc.connection.http_GET(url).read())
+        value = root.findtext("download_url")
+        return value.rstrip("/") if value else None
+    except Exception:
+        return None
+
+
 def _delete_obs_package(
     apiurl: str, obs_project_name: str, package_name: str, dry_run: bool
 ) -> None:

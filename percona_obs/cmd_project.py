@@ -1,7 +1,9 @@
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import osc.conf
 import yaml
 
 from .common import (
@@ -15,12 +17,14 @@ from .common import (
     _load_project_config_with_inheritance,
     build_project_meta,
     find_projects,
+    is_package,
     is_project,
     load_yaml,
     parse_env_overrides,
     resolve_project_path,
     _print_ok,
 )
+from .obs_api import _fetch_obs_download_url
 from .services import _git_head_sha
 
 _YAML_FILENAMES = {"project.yaml", "package.yaml"}
@@ -290,3 +294,149 @@ def cmd_project_config(args) -> None:
         print(_col(_BOLD, f"project config  {obs_project_name}"))
         print(project_config_str if project_config_str else _col(_DIM, "(empty)"))
         print()
+
+
+_DEB_REPO_PREFIXES = ("Debian_", "xUbuntu_", "Ubuntu_", "Mint_")
+_ZYPPER_REPO_PREFIXES = ("openSUSE_", "SLE_", "SLES_")
+
+
+def _repo_pkg_manager(repo_name: str) -> str:
+    """Return 'deb', 'zypper', or 'dnf' based on the OBS repository name."""
+    if any(repo_name.startswith(p) for p in _DEB_REPO_PREFIXES):
+        return "deb"
+    if any(repo_name.startswith(p) for p in _ZYPPER_REPO_PREFIXES):
+        return "zypper"
+    return "dnf"
+
+
+def _obs_project_url_path(obs_project: str) -> str:
+    """Convert an OBS project name to its download URL path segment.
+
+    "home:a:b:c" -> "home:/a:/b:/c"
+    """
+    return ":/".join(obs_project.split(":"))
+
+
+def cmd_project_install(args) -> None:
+    """Print repository installation instructions for the packages in scope."""
+    if not args.rootprj:
+        raise SystemExit(
+            "error: --rootprj is required for 'project install' "
+            "(supply -R/--rootprj or use -P/--profile)"
+        )
+
+    osc.conf.get_config(override_apiurl=args.apiurl)
+    apiurl = osc.conf.config["apiurl"]
+
+    download_url = _fetch_obs_download_url(apiurl)
+    if not download_url:
+        raise SystemExit(
+            f"error: could not retrieve download URL from OBS instance ({apiurl})"
+        )
+
+    # Build env_vars from profile + -e overrides.
+    env_vars: dict[str, str] | None = None
+    if args.profile:
+        env_vars = _load_profile_env(args.profile)
+    if args.env_overrides:
+        overrides = parse_env_overrides(args.env_overrides)
+        env_vars = {**(env_vars or {}), **overrides}
+
+    # Resolve scope.
+    if args.project:
+        scope_path = resolve_project_path(args.project)
+        if not scope_path.is_dir():
+            raise SystemExit(
+                f"error: project '{args.project}' not found "
+                f"(expected {scope_path.relative_to(REPO_ROOT.parent)})"
+            )
+        if not is_project(scope_path):
+            raise SystemExit(f"error: '{args.project}' is a package, not a project")
+        scope_obs_name = f"{args.rootprj}:{args.project}"
+    else:
+        scope_path = REPO_ROOT
+        root_config = load_yaml(REPO_ROOT / "project.yaml")
+        scope_obs_name = root_config.get("name") or args.rootprj
+
+    all_projects = list(find_projects(scope_path, scope_obs_name))
+
+    # Filter: skip opt-out projects and projects with no direct packages.
+    def _has_direct_packages(project_path: Path) -> bool:
+        return any(c.is_dir() and is_package(c) for c in project_path.iterdir())
+
+    projects = [
+        (obs_name, proj_path)
+        for obs_name, proj_path in all_projects
+        if load_yaml(proj_path / "project.yaml").get("install") is not False
+        and _has_direct_packages(proj_path)
+    ]
+
+    if not projects:
+        raise SystemExit("error: no installable projects found in scope")
+
+    # Build repo_name -> [obs_project_name, ...] mapping.
+    repo_entries: dict[str, list[str]] = {}
+    for obs_project_name, project_path in projects:
+        config = _load_project_config_with_inheritance(project_path, env_vars)
+        for repo in config.get("repositories", []):
+            repo_name = repo.get("name", "")
+            if not repo_name:
+                continue
+            if args.repo and repo_name != args.repo:
+                continue
+            repo_entries.setdefault(repo_name, [])
+            if obs_project_name not in repo_entries[repo_name]:
+                repo_entries[repo_name].append(obs_project_name)
+
+    if not repo_entries:
+        if args.repo:
+            raise SystemExit(f"error: repository '{args.repo}' not found in scope")
+        raise SystemExit("error: no repositories found in scope")
+
+    sep = _col(_DIM, "─" * 72)
+    for repo_name in sorted(repo_entries):
+        print(sep)
+        print(_col(_BOLD, repo_name))
+        print()
+        pkg_mgr = _repo_pkg_manager(repo_name)
+        proj_list = repo_entries[repo_name]
+
+        for obs_project in proj_list:
+            url_path = _obs_project_url_path(obs_project)
+            repo_url = f"{download_url}/{url_path}/{repo_name}/"
+            print(f"# {obs_project}")
+
+            if pkg_mgr == "deb":
+                list_file = f"{obs_project}.list"
+                gpg_file = re.sub(r"[:.]+", "_", obs_project) + ".gpg"
+                print(
+                    f"echo 'deb {repo_url} /' \\\n"
+                    f"  | tee /etc/apt/sources.list.d/{list_file}"
+                )
+                print(
+                    f"curl -fsSL {repo_url}Release.key \\\n"
+                    f"  | gpg --dearmor"
+                    f" | tee /etc/apt/trusted.gpg.d/{gpg_file} > /dev/null"
+                )
+            elif pkg_mgr == "zypper":
+                print(f"zypper addrepo \\\n" f"  {repo_url} \\\n" f"  {obs_project}")
+            else:  # dnf
+                repo_file = re.sub(r"[:.]+", "_", obs_project)
+                print(f"rpm --import {repo_url}repodata/repomd.xml.key")
+                print(
+                    f"tee /etc/yum.repos.d/{repo_file}.repo << 'EOF'\n"
+                    f"[{obs_project}]\n"
+                    f"name={obs_project} - {repo_name}\n"
+                    f"baseurl={repo_url}\n"
+                    f"enabled=1\n"
+                    f"gpgcheck=0\n"
+                    f"EOF"
+                )
+            print()
+
+        if pkg_mgr == "deb":
+            print("apt update")
+            print()
+        elif pkg_mgr == "zypper":
+            print("zypper --gpg-auto-import-keys refresh")
+            print()

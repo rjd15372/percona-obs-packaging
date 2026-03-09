@@ -12,7 +12,7 @@ from .cmd_profile import (
     cmd_profile_create,
     cmd_profile_list,
 )
-from .cmd_project import cmd_project_config, cmd_project_verify
+from .cmd_project import cmd_project_config, cmd_project_install, cmd_project_verify
 from .cmd_sync import cmd_sync, cmd_sync_delete, cmd_sync_promote
 from .common import _DIM, _col, logger
 
@@ -336,6 +336,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restrict validation to this package within the project. Requires project.",
     )
     project_verify_parser.set_defaults(func=cmd_project_verify)
+
+    project_install_parser = project_subparsers.add_parser(
+        "install",
+        help="Show repository installation instructions for testing built packages.",
+    )
+    project_install_parser.add_argument(
+        "project",
+        nargs="?",
+        default=None,
+        help="Restrict output to this subproject (colon notation, e.g. ppg:17.9). "
+        "If omitted, all installable projects under root/ are included.",
+    )
+    project_install_parser.add_argument(
+        "--repo",
+        metavar="NAME",
+        default=None,
+        help="Filter output to a specific repository name (e.g. Debian_13).",
+    )
+    project_install_parser.set_defaults(func=cmd_project_install)
 
     project_config_parser = project_subparsers.add_parser(
         "config",
