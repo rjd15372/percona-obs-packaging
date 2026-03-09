@@ -24,6 +24,10 @@ venv/bin/pyright                # type-check
 
 Both must pass (black: "N files reformatted" or "N files left unchanged"; pyright: "0 errors") before considering the task done.
 
+## Reading the source
+
+**Before working on any task that involves the `percona_obs/` package, read the relevant source files first.** Do not propose or make changes to code you have not read. The key files are listed in the table below — read the ones that are in scope for the task before suggesting anything.
+
 ## Implementation Planning
 
 **Before changing any code, always write an implementation plan and show it to the user for approval.** Only proceed with code changes after the user has explicitly approved the plan. This applies to all non-trivial changes (new features, refactors, multi-file edits).

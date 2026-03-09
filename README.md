@@ -285,9 +285,9 @@ display the built version next to the status:
 ```
 home:Admin:percona
 ├── percona-telemetry-agent
-│   ├── RockyLinux_9           ✔ succeeded  3.5.26-6.1
-│   ├── Debian_13              ✔ succeeded  3.5.26-6.1
-│   └── xUbuntu_24.04          ✔ succeeded  3.5.26-6.1
+│   ├── RockyLinux_9           ✔ succeeded     3.5.26-6.1
+│   ├── Debian_13              ✔ succeeded     3.5.26-6.1
+│   └── xUbuntu_24.04          ✔ succeeded     3.5.26-6.1
 ├── builddep
 │   ├── golang-1.25
 │   │   ├── RockyLinux_9       ✔ succeeded
@@ -300,13 +300,13 @@ home:Admin:percona
 └── ppg
     └── 17.9
         ├── etcd
-        │   ├── RockyLinux_9   ✔ succeeded  3.5.26-6.1
-        │   ├── Debian_13      ✔ succeeded  3.5.26-6.1
-        │   └── xUbuntu_24.04  ✔ succeeded  3.5.26-6.1
-        └── percona-pg-telemetry
-            ├── RockyLinux_9   ✔ succeeded  [:17]  1.0.0-1.1
-            ├── Debian_13      ✔ succeeded  [:17]  1.0.0-1.1
-            └── xUbuntu_24.04  ◌ scheduled  [:17]
+        │   ├── RockyLinux_9   ✔ succeeded     3.5.26-6.1
+        │   ├── Debian_13      ✔ succeeded     3.5.26-6.1
+        │   └── xUbuntu_24.04  ✔ succeeded     3.5.26-6.1
+        └── percona-pg-telemetry:17
+            ├── RockyLinux_9   ✔ succeeded     1.0.0-1.1
+            ├── Debian_13      ✔ succeeded     1.0.0-1.1
+            └── xUbuntu_24.04  ◌ scheduled
 ```
 
 | Symbol | Color | Meaning |
@@ -322,9 +322,63 @@ Scope can be narrowed the same way as other commands:
 ```sh
 ./percona-obs -P local build status ppg:17.9               # subproject only (tree rooted there)
 ./percona-obs -P local build status ppg:17.9 etcd          # single package
+./percona-obs -P local build status --repo RockyLinux_9    # all packages, one distro only
 ```
 
 Set `NO_COLOR=1` to disable color output.
+
+---
+
+## Getting repository installation instructions
+
+`project install` prints the shell commands needed to configure the OBS-hosted package
+repositories on a target machine, grouped by distribution.
+
+> This command contacts the OBS instance to resolve the download URL, so it requires a
+> profile (or explicit `-A`/`-R`).
+
+### Show instructions for all distributions
+
+```sh
+./percona-obs -P local project install
+```
+
+### Show instructions for a specific subproject
+
+```sh
+./percona-obs -P local project install ppg:17.9
+```
+
+### Filter to a single distribution
+
+```sh
+./percona-obs -P local project install --repo RockyLinux_9
+```
+
+Example output for a Rocky Linux 9 repository:
+
+```
+────────────────────────────────────────────────────────────────────────
+RockyLinux_9
+
+# home:Admin:percona:ppg:17.9
+rpm --import http://my-obs.local/home:/Admin:/percona:/ppg:/17.9/RockyLinux_9/repodata/repomd.xml.key
+tee /etc/yum.repos.d/home_Admin_percona_ppg_17_9.repo << 'EOF'
+[home:Admin:percona:ppg:17.9]
+name=home:Admin:percona:ppg:17.9 - RockyLinux_9
+baseurl=http://my-obs.local/home:/Admin:/percona:/ppg:/17.9/RockyLinux_9/
+enabled=1
+gpgcheck=0
+EOF
+
+```
+
+For Debian-based distributions, instructions use `echo … | tee` + `curl … | gpg --dearmor | tee`
+followed by `apt update`. For openSUSE/SLE repositories, `zypper addrepo` +
+`zypper --gpg-auto-import-keys refresh` is emitted instead.
+
+Projects that set `install: false` in their `project.yaml`, or that contain no packages,
+are silently excluded from the output.
 
 ---
 
