@@ -25,6 +25,7 @@
     <param name="revision">v4.1.0</param>
     <param name="versionformat">@PARENT_TAG@</param>
     <param name="versionrewrite-pattern">v(.*)</param>
+    <param name="filename">percona-patroni</param>
   </service>
 
   <service mode="buildtime" name="tar" />
