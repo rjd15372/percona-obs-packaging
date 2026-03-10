@@ -11,9 +11,6 @@ include /usr/share/dpkg/buildflags.mk
 %:
 	dh $@ --buildsystem=meson
 
-override_dh_builddeb:
-	dh_builddeb -- -Zgzip
-
 override_dh_auto_configure:
 	# src contains a separate configure script.
 	dh_auto_configure -- --prefix=/usr --bindir=/usr/bin

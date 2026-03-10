@@ -4,7 +4,7 @@ Binary: percona-pgbackrest, percona-pgbackrest-doc
 Architecture: any all
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
-Build-Depends: debhelper-compat (= 13),
+Build-Depends: debhelper-compat (= 10),
                libbz2-dev,
                liblz4-dev,
                libpq-dev,
