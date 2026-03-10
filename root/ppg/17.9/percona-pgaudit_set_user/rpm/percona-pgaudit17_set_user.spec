@@ -1,3 +1,4 @@
+%define pgmajorversion 17
 %global  sname pgaudit%{pgmajorversion}_set_user
 %define pginstdir /usr/pgsql-%{pgmajorversion}/
 

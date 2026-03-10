@@ -1,3 +1,4 @@
+%define pgmajorversion 17
 %define pginstdir /usr/pgsql-%{pgmajorversion}/
 
 Name:           percona-pgaudit%{pgmajorversion}
