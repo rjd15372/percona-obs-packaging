@@ -24,7 +24,7 @@
     <param name="scm">git</param>
     <param name="revision">0.3.10</param>
     <param name="version">0.3.10</param>
-    <param name="filename">PySyncObj</param>
+    <param name="filename">python3-pysyncobj</param>
   </service>
 
   <service mode="buildtime" name="tar" />

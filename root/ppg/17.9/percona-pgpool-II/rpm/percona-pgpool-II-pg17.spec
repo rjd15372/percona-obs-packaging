@@ -22,7 +22,7 @@ License:        BSD
 URL:            https://www.pgpool.net/
 Source0:        pgpool2-%{version}.tar.gz
 
-BuildRequires:  postgresql%{pgmajorversion}-devel
+BuildRequires:  percona-postgresql%{pgmajorversion}-devel bison flex
 BuildRequires:  pam-devel
 BuildRequires:  libmemcached-devel
 BuildRequires:  openssl-devel
@@ -31,7 +31,7 @@ BuildRequires:  autoconf
 BuildRequires:  automake
 BuildRequires:  gcc
 
-Requires:       postgresql%{pgmajorversion} >= %{pgmajorversion}
+Requires:       percona-postgresql%{pgmajorversion} >= %{pgmajorversion}
 
 %description
 pgpool-II is a middleware that works between PostgreSQL servers and a
