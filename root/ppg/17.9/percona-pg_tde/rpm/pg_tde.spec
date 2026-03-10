@@ -30,6 +30,9 @@ URL:            https://github.com/percona/pg_tde
 Source0:        %{sname}-%{version}.tar.gz
 
 BuildRequires:  %{pg_name}-devel chrpath json-c-devel openssl-devel libcurl-devel lz4-devel zlib-devel libzstd-devel libxml2-devel libxslt-devel libselinux-devel pam-devel krb5-devel readline-devel
+%if 0%{?rhel} || 0%{?fedora}
+BuildRequires:  clang llvm
+%endif
 Requires:       json-c curl openssl
 
 Epoch:          1
