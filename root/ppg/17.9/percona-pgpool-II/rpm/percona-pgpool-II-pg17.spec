@@ -13,6 +13,7 @@
 %define short_name      pgpool-II
 %define pgmajorversion  17
 %define pghome          /usr/pgsql-%{pgmajorversion}
+%global _unique_build_ids 0
 
 Summary:        pgpool-II connection pooling server for PostgreSQL %{pgmajorversion}
 Name:           percona-pgpool-II-pg%{pgmajorversion}
@@ -56,10 +57,29 @@ make %{?_smp_mflags}
 %install
 make install DESTDIR=%{buildroot}
 
+%package devel
+Summary:        Development headers and libraries for pgpool-II
+Requires:       %{name} = %{version}-%{release}
+
+%description devel
+Development headers and libraries for building pgpool-II client applications.
+
 %files
 %doc README TODO COPYING
 %{_bindir}/*
 %config(noreplace) %{_sysconfdir}/%{short_name}/*.sample
+%{_datadir}/%{short_name}/insert_lock.sql
+%{_datadir}/%{short_name}/pgpool.pam
+%{_libdir}/libpcp.so.*
+
+%files devel
+%{_includedir}/libpcp_ext.h
+%{_includedir}/pcp.h
+%{_includedir}/pool_process_reporting.h
+%{_includedir}/pool_type.h
+%{_libdir}/libpcp.a
+%{_libdir}/libpcp.la
+%{_libdir}/libpcp.so
 
 %changelog
 * Tue Mar 10 2026 Percona Build/Release Team <eng-build@percona.com> - 4.7.0-1
