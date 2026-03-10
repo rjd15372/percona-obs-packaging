@@ -10,7 +10,6 @@ Build-Depends:
  debhelper-compat (= 13),
  dpkg-dev (>= 1.16.1~),
  flex,
- imagemagick,
  libcunit1-dev,
  libgdal-dev (>= 1.11.2+dfsg-3~) | libgdal1-dev (>= 1.9.0~),
  libgeos-dev (>= 3.6),
