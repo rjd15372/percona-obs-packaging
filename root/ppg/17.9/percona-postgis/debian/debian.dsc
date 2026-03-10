@@ -23,7 +23,6 @@ Build-Depends:
  lsb-release,
  pkgconf,
  po-debconf,
- percona-postgresql-all,
  percona-postgresql-common (>= 148~),
  percona-postgresql-server-dev-all,
  protobuf-c-compiler,
