@@ -102,7 +102,7 @@ Version:	1.0.0
 Release:	1%{?dist}
 License:	GPLv2+
 Source0:	percona-postgis-%{version}.tar.gz
-Source2:        https://download.osgeo.org/postgis/docs/postgis-%{version}.pdf
+Source2:        postgis-%{version}.pdf
 Source4:	%{sname}%{postgiscurrmajorversion}-filter-requires-perl-Pg.sh
 
 URL:		https://www.postgis.net/
