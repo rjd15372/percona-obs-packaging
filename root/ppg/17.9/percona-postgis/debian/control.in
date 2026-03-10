@@ -27,7 +27,8 @@ Build-Depends: bison,
                protobuf-c-compiler,
                rdfind,
                xsltproc,
-               libxml2-utils
+               libxml2-utils,
+               docbook-xsl
 Standards-Version: 4.7.3
 Homepage: https://postgis.net/
 Rules-Requires-Root: no
