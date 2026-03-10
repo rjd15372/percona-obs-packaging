@@ -15,7 +15,7 @@ Summary:	pgaudit%{pgmajorversion}_set_user - PostgreSQL extension allowing privi
 Packager:       Percona Development Team <https://jira.percona.com>
 Vendor:         Percona, LLC
 
-BuildRequires:	percona-postgresql%{pgmajorversion}
+BuildRequires:	percona-postgresql%{pgmajorversion}-devel
 %if 0%{?rhel} || 0%{?fedora}
 BuildRequires:	clang llvm
 %endif
