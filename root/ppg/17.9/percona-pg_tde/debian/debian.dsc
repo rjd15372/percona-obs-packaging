@@ -17,7 +17,7 @@ Build-Depends:
  libxslt1-dev,
  libselinux1-dev,
  libpam0g-dev,
- libgssapi-krb5-2,
+ libkrb5-dev,
  libreadline-dev,
  shtool
 Debtransform-Release: 1
