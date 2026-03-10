@@ -1,4 +1,4 @@
-Format: 3.0 (native)
+Format: 3.0 (quilt)
 Source: percona-wal2json
 Binary: percona-postgresql-17-wal2json
 Architecture: any

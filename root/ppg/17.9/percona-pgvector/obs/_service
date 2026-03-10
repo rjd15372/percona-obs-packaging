@@ -25,7 +25,7 @@
     <param name="revision">v0.8.2</param>
     <param name="versionformat">@PARENT_TAG@</param>
     <param name="versionrewrite-pattern">v(.*)</param>
-    <param name="filename">percona-pgvector</param>
+    <param name="filename">percona-pgvector_17</param>
   </service>
 
   <service mode="buildtime" name="tar" />
@@ -36,6 +36,6 @@
   </service>
 
   <service mode="buildtime" name="set_version">
-    <param name="basename">percona-pgvector</param>
+    <param name="basename">percona-pgvector_17</param>
   </service>
 </services>

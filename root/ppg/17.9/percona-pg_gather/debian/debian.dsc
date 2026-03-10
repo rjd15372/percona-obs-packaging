@@ -1,4 +1,4 @@
-Format: 3.0 (native)
+Format: 3.0 (quilt)
 Source: percona-pg-gather
 Binary: percona-pg-gather
 Architecture: any
