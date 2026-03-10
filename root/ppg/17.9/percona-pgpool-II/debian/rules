@@ -1,0 +1,11 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	autoreconf --force --install
+	./configure --prefix=/usr
+
+override_dh_builddeb:
+	dh_builddeb -- -Zgzip
