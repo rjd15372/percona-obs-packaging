@@ -36,6 +36,8 @@ project-config: |
 
   %if "%_repository" == "RockyLinux_9"
   ExpandFlags: module:llvm-toolset-rhel9
+  # hdf-libs (EPEL split package) and hdf both provide libdf.so.0 and libmfhdf.so.0
+  Prefer: hdf-libs
   %endif
 
   %if "%_repository" == "Debian_13" || "%_repository" == "xUbuntu_24.04"
