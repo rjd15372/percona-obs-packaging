@@ -1,5 +1,6 @@
 %global sname wal2json
 %define pgmajorversion 17
+%define pginstdir /usr/pgsql-%{pgmajorversion}
 %global _default_patch_fuzz 2
 
 Summary:	JSON output plugin for changeset extraction

@@ -45,6 +45,7 @@ load balancing, and limiting of exceeding connections.
 libtoolize
 autoreconf --force --install
 %configure \
+    --sysconfdir=%{_sysconfdir}/%{short_name} \
     --with-pgsql=%{pghome} \
     --with-pgsql-includedir=%{pghome}/include/ \
     --with-openssl \
@@ -58,9 +59,8 @@ make install DESTDIR=%{buildroot}
 %files
 %doc README TODO COPYING
 %{_bindir}/*
-%{_sysconfdir}/%{short_name}/*.sample
-%{_mandir}/man8/*
+%config(noreplace) %{_sysconfdir}/%{short_name}/*.sample
 
 %changelog
-* Mon Mar 10 2026 Percona Build/Release Team <eng-build@percona.com> - 4.7.0-1
+* Tue Mar 10 2026 Percona Build/Release Team <eng-build@percona.com> - 4.7.0-1
 - Release 4.7.0-1
