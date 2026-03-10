@@ -10,6 +10,7 @@ Build-Depends:
  python-all-dbg | python3-all-dbg,
  dh-python,
  libpq-dev,
- python3-sphinx (>= 1.0.7+dfsg-1~)
+ python3-sphinx (>= 1.0.7+dfsg-1~),
+ python3-setuptools
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
