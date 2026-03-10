@@ -6,6 +6,8 @@ Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
  debhelper-compat (= 13),
+ bison,
+ flex,
  libpq-dev,
  libmemcached-dev,
  libssl-dev,
