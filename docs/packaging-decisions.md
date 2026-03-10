@@ -79,22 +79,51 @@
 - **autoreconf required**: pgpool-II's configure.ac is not pre-generated in the git checkout,
   so `libtoolize && autoreconf --force --install` must run before `%configure`. This is
   needed because we build directly from the upstream git tag.
+- **Duplicate build-ids (pcp_* utilities)**: pgpool-II's `pcp_*` utility binaries are all
+  symlinks to a single binary. RPM's build-id check detects them as sharing the same build-id
+  and fails. **Fix**: `%global _unique_build_ids 0` suppresses this check.
+- **Installed but unpackaged files**: `make install` installs headers, static libs, and data
+  files not listed in the initial `%files`. Added `%package devel` for headers/static libs;
+  added `libpcp.so.*`, `insert_lock.sql`, and `pgpool.pam` to the main `%files`.
+
+### Debian/Ubuntu (gram.h generation)
+- **gram.h not generated before parallel make**: pgpool-II generates `gram.h` and
+  `gram_minimal.h` from `gram.y` via bison. When `dh_auto_build` launches parallel make,
+  compilation of files that `#include "gram.h"` races against bison generation.
+  **Fix**: added `override_dh_auto_build` in `debian/rules` to run
+  `make -C src/parser gram.h gram_minimal.h` before `dh_auto_build`.
+- **bison and flex missing from Build-Depends**: Without `bison` and `flex` in
+  `debian/control` and `debian.dsc` Build-Depends, they are not installed in the build
+  chroot and the gram.h generation step fails with "flex: command not found".
 
 ## percona-postgis
 
-- **Version naming problem (unresolved)**: The RPM spec is named `percona-postgis35_17.spec`.
-  OBS `set_version` service appears to extract `17.spec` from the filename and uses it as the
-  version in `debian.dsc`, producing a malformed version `17.spec-1+X.Y`. Root cause: OBS
-  `set_version` strips the package name prefix from the spec filename to detect a version
-  component; when the name doesn't match cleanly, it falls back to using a trailing segment
-  of the filename. Potential fix: rename spec to `percona-postgis.spec`.
-- **Missing GIS library dependencies**: Both Debian and RockyLinux_9 builds fail because the
-  OBS instance does not mirror the specialized GIS library packages required:
-  - Debian: `libgdal-dev`, `libgeos-dev`, `libproj-dev`, `libsfcgal-dev`, etc.
-  - RPM: `geos311-devel`, `gdal311-devel`, `proj95-devel` (pgdg-style versioned packages)
-  These packages come from dedicated GIS repositories (OSGeo, pgdg-extras) that are not
-  configured in our OBS instance. PostGIS builds are blocked until these repos are added.
-- **Status**: Left failing; requires OBS repository configuration changes that are outside
+### Version naming (fixed)
+- **Root cause**: The RPM spec was named `percona-postgis35_17.spec`. OBS `set_version`
+  service extracts a version from spec filenames; the `_17` suffix before `.spec` was being
+  interpreted as the version, producing a malformed Debian package version `17.spec-1+X.Y`.
+  **Fix**: renamed spec to `percona-postgis.spec` (no numeric version in filename).
+
+### Debian/Ubuntu build dependencies (fixed)
+- **debian.dsc Build-Depends was sparse**: The original `debian.dsc` only had
+  `debhelper (>= 9), percona-postgresql-server-dev-all`. OBS uses the `debian.dsc`
+  Build-Depends to install packages in the build chroot; missing entries mean the GIS
+  libraries are not installed when the build runs. **Fix**: synced `debian.dsc`
+  Build-Depends with `debian/control` (adds libgdal-dev, libgeos-dev, libproj-dev,
+  libsfcgal-dev, bison, flex, and other required packages).
+- **rpm.tar.gz removed from Debtransform-Files-Tar**: The RPM spec is not needed in the
+  Debian source package and was contributing to the version confusion. Removed from
+  `debian.dsc`; `Debtransform-Files-Tar: debian.tar.gz` is now sufficient.
+- **Dual compat conflict**: `debian/compat` contained `13` AND `debian/control` had
+  `debhelper-compat (= 13)` in Build-Depends. **Fix**: removed `debian/compat`, kept the
+  Build-Depends entry (same fix as percona-pgpool-II).
+
+### RPM build (infrastructure — unresolved)
+- **Missing GIS library packages**: RockyLinux_9 build is `unresolvable` because the OBS
+  instance lacks PGDG-style versioned GIS packages:
+  `geos311-devel`, `gdal311-devel`, `proj95-devel`, `SFCGAL-devel`, `pgdg-srpm-macros`.
+  These come from PGDG extra repositories that are not configured in the OBS project.
+  Adding them requires an OBS project configuration change (adding repo paths) — outside
   the scope of packaging file fixes.
 
 ## percona-pg_repack (fixed by user prior to this session)
