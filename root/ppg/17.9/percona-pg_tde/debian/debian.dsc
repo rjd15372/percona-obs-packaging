@@ -18,6 +18,7 @@ Build-Depends:
  libselinux1-dev,
  libpam0g-dev,
  libgssapi-krb5-2,
- libreadline-dev
+ libreadline-dev,
+ shtool
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
