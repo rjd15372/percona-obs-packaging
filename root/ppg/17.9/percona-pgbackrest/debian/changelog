@@ -1,0 +1,5 @@
+percona-pgbackrest (2.58.0-1) unstable; urgency=low
+
+  * Update to 2.58.0.
+
+ -- Percona Development Team <info@percona.com>  Tue, 10 Mar 2026 00:00:00 +0000
