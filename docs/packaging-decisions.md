@@ -110,13 +110,38 @@
   Build-Depends to install packages in the build chroot; missing entries mean the GIS
   libraries are not installed when the build runs. **Fix**: synced `debian.dsc`
   Build-Depends with `debian/control` (adds libgdal-dev, libgeos-dev, libproj-dev,
-  libsfcgal-dev, bison, flex, and other required packages).
-- **rpm.tar.gz removed from Debtransform-Files-Tar**: The RPM spec is not needed in the
-  Debian source package and was contributing to the version confusion. Removed from
-  `debian.dsc`; `Debtransform-Files-Tar: debian.tar.gz` is now sufficient.
+  libsfcgal-dev, bison, flex, xsltproc, percona-postgresql-17, and other required packages).
+- **rpm.tar.gz must stay in Debtransform-Files-Tar**: If `rpm.tar.gz` is not listed as an
+  overlay file, `debtransform` sees two candidate source tarballs (`percona-postgis-*.tar.gz`
+  and `rpm.tar.gz`) and fails with "Too many files looking like a usable source tarball".
+  `Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz` correctly marks `rpm.tar.gz` as an
+  overlay (not the main source).
 - **Dual compat conflict**: `debian/compat` contained `13` AND `debian/control` had
   `debhelper-compat (= 13)` in Build-Depends. **Fix**: removed `debian/compat`, kept the
   Build-Depends entry (same fix as percona-pgpool-II).
+- **libcurl4 conflict via libgdal-dev**: `libgdal-dev` transitively requires BOTH
+  `libcurl4-openssl-dev` AND `libcurl4-gnutls-dev` through different dependency paths. These
+  two packages conflict in Debian. **Fix**: Added `Ignore: libcurl4-gnutls-dev` to the OBS
+  project config (`root/project.yaml`) for Debian/Ubuntu repos.
+- **libjpeg-dev ambiguity**: `libgdal-dev` and several of its deps require `libjpeg-dev`
+  which is provided by both `libjpeg62-turbo-dev` and `libjpeg-dev`. OBS can't pick one.
+  **Fix**: Added `Prefer: libjpeg62-turbo-dev` to the OBS project config.
+- **percona-postgresql-all not built**: `percona-postgresql-all` was in `debian/control`
+  Build-Depends but is not built in our OBS project. It was removed from both `debian/control`
+  and `debian.dsc` (tests use `percona-postgresql-17` directly instead).
+- **pg_buildext requires debian/pgversions**: `pg_buildext` is called in `debian/rules` for
+  multi-version PostGIS builds. It requires a `debian/pgversions` file listing supported PG
+  versions. **Fix**: added `debian/pgversions` containing just `17`.
+- **pg_buildext requires debian/control.in**: `pg_buildext updatecontrol` expects a
+  `debian/control.in` template with `PGVERSION` tokens (NOT `@PGVERSION@`). Without it,
+  the `clean` target fails with "Unknown sequence debian/control.in". **Fix**: created
+  `debian/control.in` from `debian/control` with `percona-postgresql-17` →
+  `percona-postgresql-PGVERSION` substitutions.
+- **percona-postgresql-17 needed for tests**: `override_dh_auto_test` uses `pg_virtualenv`
+  which calls `initdb` to create a test cluster. This requires `percona-postgresql-17`
+  (provides `initdb`) to be installed in the build chroot.
+- **xsltproc needed for docs**: The doc install step (`make -C doc docs-install`) requires
+  `xsltproc` for processing DocBook XML. Added to both `debian.dsc` and `debian/control`.
 
 ### RPM build (infrastructure — unresolved)
 - **Missing GIS library packages**: RockyLinux_9 build is `unresolvable` because the OBS
