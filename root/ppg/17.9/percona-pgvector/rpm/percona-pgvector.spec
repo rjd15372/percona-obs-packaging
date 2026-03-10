@@ -22,6 +22,9 @@ URL:		https://github.com/%{sname}/%{sname}/
 Source0:	%{name}-%{version}.tar.gz
 
 BuildRequires:	percona-postgresql%{pgmajorversion}-devel
+%if 0%{?rhel} || 0%{?fedora}
+BuildRequires:	clang llvm
+%endif
 Requires:	postgresql%{pgmajorversion}-server
 
 %description
