@@ -5,24 +5,7 @@ Architecture: any all
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
- bison,
- dctrl-tools,
  debhelper-compat (= 13),
- dpkg-dev (>= 1.16.1~),
- flex,
- libcunit1-dev,
- libgdal-dev (>= 3.0),
- libgeos-dev (>= 3.6),
- libproj-dev (>= 5.2.0),
- libjson-c-dev | libjson0-dev (>= 0.9~),
- libpcre2-dev,
- libprotobuf-c-dev,
- libxml2-dev (>= 2.5.0~),
- lsb-release,
- pkgconf,
- po-debconf,
- percona-postgresql-common (>= 148~),
- protobuf-c-compiler,
- rdfind
+ libgdal-dev (>= 3.0)
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
