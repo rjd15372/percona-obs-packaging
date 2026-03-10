@@ -17,7 +17,7 @@ Source4:	%{sname}.service
 Source5:	%{sname}.service.rhel7
 Patch0:		%{sname}-ini.patch
 
-BuildRequires:	libevent-devel >= 2.0 libtool pandoc
+BuildRequires:	libevent-devel >= 2.0 libtool pandoc systemd-devel
 Requires:	libevent >= 2.0
 Requires:	python3 python3-psycopg2
 BuildRequires:	openssl-devel pam-devel
