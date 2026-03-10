@@ -249,12 +249,20 @@ def build_project_meta(
 
 
 def build_package_meta(
-    obs_project_name: str, package_name: str, title: str, description: str
+    obs_project_name: str,
+    package_name: str,
+    title: str,
+    description: str,
+    disable_build_repos: list[str] | None = None,
 ) -> str:
     """Build OBS package metadata XML from package.yaml fields."""
     root = ET.Element("package", name=package_name, project=obs_project_name)
     ET.SubElement(root, "title").text = title
     ET.SubElement(root, "description").text = description
+    if disable_build_repos:
+        build_elem = ET.SubElement(root, "build")
+        for repo in disable_build_repos:
+            ET.SubElement(build_elem, "disable", repository=repo)
     ET.indent(root)
     return ET.tostring(root, encoding="unicode")
 

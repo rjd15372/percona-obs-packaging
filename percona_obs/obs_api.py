@@ -395,16 +395,28 @@ def _project_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
 
 
 def _package_meta_subset_equal(current_bytes: bytes, desired_xml: str) -> bool:
-    """Return True if the title and description we manage are identical to what OBS has."""
+    """Return True if the fields we manage are identical to what OBS has.
+
+    Compares title, description, and build disable flags.
+    """
     try:
         current = ET.fromstring(current_bytes)
         desired = ET.fromstring(desired_xml)
     except ET.ParseError:
         return False
 
-    return _child_text(current, "title") == _child_text(
-        desired, "title"
-    ) and _child_text(current, "description") == _child_text(desired, "description")
+    if _child_text(current, "title") != _child_text(desired, "title"):
+        return False
+    if _child_text(current, "description") != _child_text(desired, "description"):
+        return False
+
+    def _disable_repos(elem: ET.Element) -> set[str]:
+        build = elem.find("build")
+        if build is None:
+            return set()
+        return {d.get("repository", "") for d in build.findall("disable")}
+
+    return _disable_repos(current) == _disable_repos(desired)
 
 
 def _edit_project_meta(
@@ -622,11 +634,14 @@ def _apply_package_config(
     Prints '+' for creates, '~' for updates, '=' for unchanged resources.
     """
     package_config = load_yaml(package_path / "package.yaml")
+    disable_cfg = package_config.get("disable") or {}
+    disable_build_repos: list[str] = (disable_cfg.get("build") or {}).get("repo") or []
     meta = build_package_meta(
         obs_project_name,
         package_name,
         package_config.get("title", ""),
         package_config.get("description", ""),
+        disable_build_repos=disable_build_repos or None,
     )
 
     logger.debug(f"  package meta XML:\n{meta}")
