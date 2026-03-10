@@ -25,7 +25,8 @@ Build-Depends: bison,
                percona-postgresql-common (>= 148~),
                percona-postgresql-server-dev-all,
                protobuf-c-compiler,
-               rdfind
+               rdfind,
+               xsltproc
 Standards-Version: 4.7.3
 Homepage: https://postgis.net/
 Rules-Requires-Root: no

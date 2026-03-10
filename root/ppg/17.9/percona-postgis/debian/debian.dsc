@@ -27,6 +27,7 @@ Build-Depends:
  percona-postgresql-common (>= 148~),
  percona-postgresql-server-dev-all,
  protobuf-c-compiler,
- rdfind
+ rdfind,
+ xsltproc
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
