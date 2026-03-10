@@ -11,7 +11,10 @@ Build-Depends:
  dpkg-dev (>= 1.16.1~),
  flex,
  libcunit1-dev,
+ libgdal-dev (>= 3.0),
  libgeos-dev (>= 3.6),
+ libproj-dev (>= 5.2.0),
+ libsfcgal-dev (>= 1.3.1),
  libjson-c-dev | libjson0-dev (>= 0.9~),
  libpcre2-dev,
  libprotobuf-c-dev,
@@ -24,4 +27,4 @@ Build-Depends:
  protobuf-c-compiler,
  rdfind
 Debtransform-Release: 1
-Debtransform-Files-Tar: debian.tar.gz
+Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
