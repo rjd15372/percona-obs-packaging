@@ -14,7 +14,6 @@ Build-Depends:
  libgdal-dev (>= 3.0),
  libgeos-dev (>= 3.6),
  libproj-dev (>= 5.2.0),
- libsfcgal-dev (>= 1.3.1),
  libjson-c-dev | libjson0-dev (>= 0.9~),
  libpcre2-dev,
  libprotobuf-c-dev,
