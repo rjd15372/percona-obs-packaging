@@ -50,7 +50,7 @@ find -name \*.py | xargs sed -i -e '1 {/^#!/d}'
 
 %build
 export CFLAGS=${RPM_OPT_FLAGS} LDFLAGS=${RPM_LD_FLAGS}
-  python3 setup.py build
+  python3 setup.py build_ext --pg-config /usr/pgsql-17/bin/pg_config build
 
 # Fix for wrong-file-end-of-line-encoding problem; upstream also must fix this.
 for i in `find doc -iname "*.html"`; do sed -i 's/\r//' $i; done
@@ -62,7 +62,7 @@ for i in `find doc -iname "*.css"`; do sed -i 's/\r//' $i; done
 
 %install
 export CFLAGS=${RPM_OPT_FLAGS} LDFLAGS=${RPM_LD_FLAGS}
-  python3 setup.py install --no-compile --root %{buildroot}
+  python3 setup.py build_ext --pg-config /usr/pgsql-17/bin/pg_config install --no-compile --root %{buildroot}
 cp -r tests/ %{buildroot}%{python3_sitearch}/%{srcname}/tests/
 for i in `find %{buildroot}%{python3_sitearch}/%{srcname}/tests/ -iname "*.py"`; do
   sed -i 's|#!/usr/bin/env python|#!/usr/bin/python3|' $i
