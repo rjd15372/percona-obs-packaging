@@ -21,6 +21,7 @@ BuildRequires:  openssl-devel
 %if 0%{?rhel} || 0%{?fedora}
 BuildRequires:  clang llvm
 %endif
+BuildRequires:  krb5-devel
 
 Requires:       postgresql%{pgmajorversion}
 Requires:       postgresql%{pgmajorversion}-libs
