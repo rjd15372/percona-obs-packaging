@@ -5,6 +5,7 @@ Architecture: any
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
+ debhelper (>= 9),
  python-all-dev | python3-all-dev,
  python-all-dbg | python3-all-dbg,
  dh-python,
