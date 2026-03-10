@@ -1,0 +1,9 @@
+Format: 3.0 (native)
+Source: percona-postgis
+Binary: percona-postgis percona-postgis-doc percona-postgresql-17-postgis-3 percona-postgresql-17-postgis-3-scripts percona-postgresql-postgis percona-postgresql-postgis-scripts
+Architecture: any all
+Version: 1.0.0
+Maintainer: Percona Development Team <info@percona.com>
+Build-Depends: debhelper (>= 9), percona-postgresql-server-dev-all
+Debtransform-Release: 1
+Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
