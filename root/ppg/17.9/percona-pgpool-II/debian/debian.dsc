@@ -5,7 +5,6 @@ Architecture: any
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
- debhelper (>= 10),
  debhelper-compat (= 13),
  libpq-dev,
  libmemcached-dev,

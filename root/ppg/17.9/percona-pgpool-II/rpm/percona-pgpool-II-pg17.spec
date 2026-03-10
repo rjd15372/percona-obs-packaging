@@ -49,6 +49,7 @@ autoreconf --force --install
     --with-pgsql-includedir=%{pghome}/include/ \
     --with-openssl \
     --with-pam
+make -C src/parser gram.h
 make %{?_smp_mflags}
 
 %install
