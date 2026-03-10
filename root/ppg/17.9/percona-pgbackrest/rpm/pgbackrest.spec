@@ -1,5 +1,5 @@
 %global debug_package %{nil}
-%global pgmajorversion %{pgmajor}
+%define pgmajorversion 17
 %global pginstdir /usr/pgsql-%{pgmajorversion}
 
 Summary:        Reliable PostgreSQL Backup & Restore

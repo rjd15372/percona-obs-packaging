@@ -1,5 +1,5 @@
 %global sname wal2json
-%global pgmajorversion %{pgmajor}
+%define pgmajorversion 17
 %global _default_patch_fuzz 2
 
 Summary:	JSON output plugin for changeset extraction

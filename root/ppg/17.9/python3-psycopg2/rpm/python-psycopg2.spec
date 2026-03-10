@@ -10,7 +10,7 @@ License:        LGPLv3+ with exceptions
 URL:            http://initd.org/psycopg/
 Source0:        psycopg2-%{version}.tar.gz
 # https://github.com/psycopg/psycopg2/blob/2_7_5/doc/src/install.rst#prerequisites
-BuildRequires:  postgresql-devel > 9.1
+BuildRequires:  percona-postgresql17-devel
 BuildRequires:  gcc
 Packager:       Percona Development Team <https://jira.percona.com>
 Vendor:         Percona, LLC

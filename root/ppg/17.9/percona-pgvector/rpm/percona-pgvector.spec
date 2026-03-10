@@ -1,4 +1,4 @@
-%define pgmajorversion %{pgmajor}
+%define pgmajorversion 17
 %define pginstdir /usr/pgsql-%{pgmajorversion}/
 %global pname vector
 %global sname percona-pgvector_%{pgmajorversion}
