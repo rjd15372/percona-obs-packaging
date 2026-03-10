@@ -206,8 +206,9 @@ override_dh_auto_install:
 		done \
 	done)
 
-#	Compile and install docs
-	$(MAKE) -C doc docs-install man-install \
+#	Compile and install docs (skip images-install: ImageMagick security
+#	policy blocks @file reads; images are removed in execute_before_dh_install anyway)
+	$(MAKE) -C doc html-install man-install \
 		DESTDIR=$(CURDIR)/debian/tmp \
 		PGSQL_DOCDIR=/usr/share/doc \
 	        PGSQL_MANDIR=/usr/share/man
