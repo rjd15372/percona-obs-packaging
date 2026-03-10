@@ -29,6 +29,7 @@ Build-Depends:
  protobuf-c-compiler,
  rdfind,
  xsltproc,
- libxml2-utils
+ libxml2-utils,
+ docbook-xsl
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
