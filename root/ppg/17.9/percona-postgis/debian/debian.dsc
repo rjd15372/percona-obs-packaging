@@ -5,7 +5,6 @@ Architecture: any all
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
- debhelper-compat (= 13),
- libgdal-dev (>= 3.0)
+ debhelper-compat (= 13)
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz
