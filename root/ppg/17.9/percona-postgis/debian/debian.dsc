@@ -22,7 +22,6 @@ Build-Depends:
  pkgconf,
  po-debconf,
  percona-postgresql-common (>= 148~),
- percona-postgresql-server-dev-all,
  protobuf-c-compiler,
  rdfind
 Debtransform-Release: 1
