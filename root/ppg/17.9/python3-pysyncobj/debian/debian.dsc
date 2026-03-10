@@ -1,4 +1,4 @@
-Format: 3.0 (native)
+Format: 3.0 (quilt)
 Source: python3-pysyncobj
 Binary: python3-pysyncobj
 Architecture: all
