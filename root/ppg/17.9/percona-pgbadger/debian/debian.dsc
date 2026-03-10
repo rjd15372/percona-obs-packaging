@@ -1,4 +1,4 @@
-Format: 3.0 (native)
+Format: 3.0 (quilt)
 Source: percona-pgbadger
 Binary: percona-pgbadger
 Architecture: all
