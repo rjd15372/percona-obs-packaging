@@ -18,6 +18,9 @@ BuildRequires:  gcc
 BuildRequires:  percona-postgresql%{pgmajorversion}-server
 BuildRequires:  percona-postgresql%{pgmajorversion}-devel
 BuildRequires:  openssl-devel
+%if 0%{?rhel} || 0%{?fedora}
+BuildRequires:  clang llvm
+%endif
 
 Requires:       postgresql%{pgmajorversion}
 Requires:       postgresql%{pgmajorversion}-libs

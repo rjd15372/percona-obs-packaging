@@ -16,6 +16,9 @@ Packager:       Percona Development Team <https://jira.percona.com>
 Vendor:         Percona, LLC
 
 BuildRequires:	percona-postgresql%{pgmajorversion}
+%if 0%{?rhel} || 0%{?fedora}
+BuildRequires:	clang llvm
+%endif
 
 Requires:	postgresql%{pgmajorversion}
 
