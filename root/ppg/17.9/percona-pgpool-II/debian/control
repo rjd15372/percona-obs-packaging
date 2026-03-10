@@ -1,0 +1,26 @@
+Source: percona-pgpool2
+Section: database
+Priority: optional
+Maintainer: Percona Development Team <info@percona.com>
+Build-Depends:
+ debhelper (>= 10),
+ debhelper-compat,
+ libpq-dev,
+ libmemcached-dev,
+ libssl-dev,
+ libpam0g-dev,
+ pkg-config,
+ libtool,
+ autoconf,
+ automake
+Standards-Version: 4.5.0
+Homepage: https://www.pgpool.net/
+
+Package: percona-pgpool2
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, postgresql-client | percona-postgresql-17
+Description: connection pooling server and replication proxy for PostgreSQL
+ pgpool-II is a middleware that works between PostgreSQL servers and a
+ PostgreSQL database client. It provides the following features:
+ Connection Pool, Replication, Load Balance, Limiting Exceeding Connections,
+ Parallel Query.

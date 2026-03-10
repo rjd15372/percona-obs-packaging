@@ -1,0 +1,18 @@
+Source: python3-pysyncobj
+Section: python
+Priority: optional
+Maintainer: Filipp Ozinov <fippo@mail.ru>
+Build-Depends:
+ debhelper (>= 9),
+ dh-python,
+ python3-all,
+ python3-setuptools
+Standards-Version: 0.3.10
+
+Package: python3-pysyncobj
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}
+Suggests:
+Description: A library for replicating your python class between multiple servers, based on raft protocol.
+ .
+ This is the Python 3 version of the package.
