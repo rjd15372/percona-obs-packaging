@@ -5,6 +5,19 @@ Architecture: any
 Version: 1.0.0
 Maintainer: Percona Development Team <info@percona.com>
 Build-Depends:
- debhelper (>= 9), percona-postgresql-server-dev-all (>= 153~)
+ debhelper (>= 9),
+ percona-postgresql-server-dev-all (>= 153~),
+ clang,
+ libcurl4-openssl-dev,
+ libssl-dev (>= 1.1.1),
+ zlib1g-dev,
+ libzstd-dev,
+ liblz4-dev,
+ libxml2-dev,
+ libxslt1-dev,
+ libselinux1-dev,
+ libpam0g-dev,
+ libgssapi-krb5-2,
+ libreadline-dev
 Debtransform-Release: 1
 Debtransform-Files-Tar: debian.tar.gz rpm.tar.gz

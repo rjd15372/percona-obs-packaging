@@ -1,38 +1,30 @@
 #!/usr/bin/make -f
 
-include /usr/share/postgresql-common/pgxs_debian_control.mk
+export USE_PGXS=1
+PG_VERSION := 17
+PG_CONFIG := /usr/lib/postgresql/$(PG_VERSION)/bin/pg_config
+DESTPKG := $(CURDIR)/debian/percona-postgresql-$(PG_VERSION)-repack
 
-override_dh_pgxs_test:
-	rm -rf /tmp/pg-repack-tablespace
-	mkdir /tmp/pg-repack-tablespace
-	+PATH=$(firstword $(wildcard $(CURDIR)/debian/postgresql-*-repack/usr/lib/postgresql/17/bin)):$(PATH) \
-		pg_buildext -i'--auth=trust' installcheck . regress postgresql-%v-repack
-	rm -rf /tmp/pg-repack-tablespace
+%:
+	dh $@
 
 override_dh_auto_build:
+	sed -i 's|\$$(libpq)|-lpgcommon -lpgport \$$(libpq)|g' bin/Makefile
+	$(MAKE) USE_PGXS=1 PG_CONFIG=$(PG_CONFIG)
 
 override_dh_auto_test:
-	# nothing to do here, see debian/tests/* instead
+	# nothing to do here
+
+override_dh_auto_install:
+	$(MAKE) USE_PGXS=1 PG_CONFIG=$(PG_CONFIG) DESTDIR=$(DESTPKG) install
+	echo "update-alternatives --install /usr/bin/pg_repack pg_repack /usr/lib/postgresql/$(PG_VERSION)/bin/pg_repack $(PG_VERSION)" >> debian/percona-postgresql-$(PG_VERSION)-repack.postinst.debhelper
+	echo "update-alternatives --remove pg_repack /usr/lib/postgresql/$(PG_VERSION)/bin/pg_repack" >> debian/percona-postgresql-$(PG_VERSION)-repack.prerm.debhelper
 
 override_dh_installdocs:
 	dh_installdocs --all doc/*
 
-override_dh_auto_install:
-	sed -i 's|\$$(libpq)|-lpgcommon -lpgport \$$(libpq)|g' bin/Makefile
-	+pg_buildext loop percona-postgresql-%v-repack
-	# Install an alternative for /usr/bin/pg_repack. We could wrap this
-	# using pg_wrapper, but it doesn't matter which binary gets used (it
-	# figures out the server version by itself), so we just use the one for
-	# the newest server version.
-	set -ex; \
-	for v in $(shell pg_buildext supported-versions); do \
-		i=$$(echo $$v | tr -d .); \
-		echo "update-alternatives --install /usr/bin/pg_repack pg_repack /usr/lib/postgresql/$$v/bin/pg_repack $$i" >> debian/percona-postgresql-$$v-repack.postinst.debhelper; \
-		echo "update-alternatives --remove pg_repack /usr/lib/postgresql/$$v/bin/pg_repack" >> debian/percona-postgresql-$$v-repack.prerm.debhelper; \
-	done
-
-%:
-	dh $@
+override_dh_auto_clean:
+	$(MAKE) USE_PGXS=1 PG_CONFIG=$(PG_CONFIG) clean || true
 
 override_dh_builddeb:
 	dh_builddeb -- -Zgzip
