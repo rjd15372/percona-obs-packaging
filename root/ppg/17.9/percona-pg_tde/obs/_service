@@ -22,9 +22,8 @@
   <service name="obs_scm">
     <param name="url">https://github.com/percona/pg_tde.git</param>
     <param name="scm">git</param>
-    <param name="revision">v2.1.2</param>
-    <param name="versionformat">@PARENT_TAG@</param>
-    <param name="versionrewrite-pattern">v(.*)</param>
+    <param name="revision">2.1.2</param>
+    <param name="version">2.1.2</param>
     <param name="filename">percona-pg_tde17</param>
   </service>
 
