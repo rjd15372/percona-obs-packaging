@@ -7,5 +7,9 @@ override_dh_auto_configure:
 	autoreconf --force --install
 	./configure --prefix=/usr
 
+override_dh_auto_build:
+	make -C src/parser gram.h gram_minimal.h
+	dh_auto_build
+
 override_dh_builddeb:
 	dh_builddeb -- -Zgzip
