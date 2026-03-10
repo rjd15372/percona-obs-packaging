@@ -15,7 +15,7 @@ Source2:	pgbackrest-tmpfiles.d
 Source3:	pgbackrest.logrotate
 Source4:	pgbackrest.service
 BuildRequires:	gcc openssl-devel zlib-devel percona-postgresql%{pgmajorversion}-devel
-BuildRequires:	libzstd-devel libxml2-devel libyaml-devel libssh2-devel meson
+BuildRequires:	libzstd-devel libxml2-devel libyaml-devel meson
 
 %if 0%{?suse_version} >= 1500
 Requires:	libopenssl3
@@ -27,11 +27,11 @@ BuildRequires:	openssl-devel
 %endif
 
 %if 0%{?fedora} >= 42 || 0%{?rhel} >= 8
-Requires:	lz4-libs libzstd libssh2
+Requires:	lz4-libs libzstd
 BuildRequires:	lz4-devel bzip2-devel ninja-build
 %endif
 %if 0%{?suse_version} && 0%{?suse_version} >= 1500
-Requires:	liblz4-1 libzstd1 libssh2-1
+Requires:	liblz4-1 libzstd1
 BuildRequires:	liblz4-devel libbz2-devel ninja
 %endif
 
