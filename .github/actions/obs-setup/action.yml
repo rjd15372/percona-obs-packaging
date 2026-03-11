@@ -29,7 +29,9 @@ runs:
 
     # Install OBS service binaries required by percona-obs sync push when
     # packages have local services (obs_scm, go_modules, …).
-    # The openSUSE:Tools repository ships Ubuntu packages for these.
+    # obs-service-tar-scm (provides obs_scm) is available via the
+    # openSUSE:Tools apt repo.  obs-service-go-modules is not packaged for
+    # Ubuntu, so it is installed directly from its upstream source repo.
     - name: Install OBS service binaries
       shell: bash
       run: |
@@ -41,7 +43,13 @@ runs:
         echo "deb [signed-by=/usr/share/keyrings/obs-tools.gpg] ${REPO_URL}/ ./" \
           | sudo tee /etc/apt/sources.list.d/obs-tools.list > /dev/null
         sudo apt-get update -qq
-        sudo apt-get install -y obs-service-tar-scm obs-service-go-modules
+        sudo apt-get install -y obs-service-tar-scm
+
+        # obs-service-go-modules is a shell script; install from source.
+        TMP=$(mktemp -d)
+        git clone --depth=1 https://github.com/openSUSE/obs-service-go_modules.git "$TMP"
+        sudo install -m 755 "$TMP/go_modules" /usr/lib/obs/service/go_modules
+        rm -rf "$TMP"
 
     # Write ~/.config/osc/oscrc via Python so special characters in the
     # password are handled correctly without any shell quoting concerns.
