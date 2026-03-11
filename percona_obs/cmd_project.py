@@ -1,3 +1,4 @@
+import concurrent.futures
 import re
 import sys
 import urllib.error
@@ -280,15 +281,29 @@ def _validate_obs_scm_revisions(
             if key not in seen:
                 seen[key] = svc_file
 
+    to_check = [
+        (url, revision, svc_file)
+        for (url, revision), svc_file in seen.items()
+        if revision.upper() != "HEAD" and not _ENV_VAR_RE.search(revision)
+    ]
+
+    if not to_check:
+        return []
+
+    print(f"  · validating {len(to_check)} obs_scm revision(s)…", flush=True)
+
     errors: list[tuple[Path, str, str]] = []
-    for (url, revision), svc_file in seen.items():
-        if revision.upper() == "HEAD":
-            continue  # HEAD always resolves; skip the network call
-        if _ENV_VAR_RE.search(revision):
-            continue  # unresolved token — skip; env_vars not provided
+
+    def _check(item: tuple[str, str, Path]) -> tuple[Path, str, str] | None:
+        url, revision, svc_file = item
         sha = _git_head_sha(url, revision)
-        if sha is None:
-            errors.append((svc_file, url, revision))
+        return None if sha is not None else (svc_file, url, revision)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for result in pool.map(_check, to_check):
+            if result is not None:
+                errors.append(result)
+
     return errors
 
 

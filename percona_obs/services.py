@@ -266,7 +266,7 @@ def _git_head_sha(url: str, revision: str) -> str | None:
             ["git", "ls-remote", "--", url] + patterns,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=15,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None
