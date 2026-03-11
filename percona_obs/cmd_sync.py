@@ -287,7 +287,12 @@ def cmd_sync(args):
         for _, pkg_path in targets
         if (pkg_path / "obs" / "_service").is_file()
     )
-    scm_errors = _validate_obs_scm_revisions(scm_service_files)
+    # Build env_vars from profile env + -e overrides (already merged by main()).
+    env_vars: dict[str, str] | None = (
+        parse_env_overrides(args.env_overrides) if args.env_overrides else None
+    )
+
+    scm_errors = _validate_obs_scm_revisions(scm_service_files, env_vars=env_vars)
     if scm_errors:
         for svc_file, url, revision in scm_errors:
             rel = svc_file.relative_to(REPO_ROOT.parent)
@@ -298,11 +303,6 @@ def cmd_sync(args):
         sys.exit(1)
 
     apiurl = osc.conf.config["apiurl"]
-
-    # Build env_vars from profile env + -e overrides (already merged by main()).
-    env_vars: dict[str, str] | None = (
-        parse_env_overrides(args.env_overrides) if args.env_overrides else None
-    )
 
     # Validate project: path entries against the live OBS instance.  This
     # catches mismatches like a missing trailing ':' in an env var value
@@ -867,6 +867,10 @@ def cmd_sync_promote(args) -> None:
     promoted = 0
     skipped = 0
 
+    env_vars: dict[str, str] | None = (
+        parse_env_overrides(args.env_overrides) if args.env_overrides else None
+    )
+
     for obs_project, package_path in targets:
         project_path = package_path.parent
         project_config = load_yaml(project_path / "project.yaml")
@@ -905,7 +909,7 @@ def cmd_sync_promote(args) -> None:
                 try:
                     for f in obs_dir.iterdir():
                         if f.is_file():
-                            shutil.copy2(f, combined / f.name)
+                            _copy_with_env_subst(f, combined, env_vars)
                     for art_name in manual_artifacts:
                         shutil.copy2(workdir / art_name, combined / art_name)
                     _upload_obs_files(
@@ -921,14 +925,31 @@ def cmd_sync_promote(args) -> None:
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
         else:
-            _upload_obs_files(
-                apiurl,
-                obs_project_name,
-                package_path.name,
-                obs_dir,
-                message=message,
-                dry_run=dry_run,
-            )
+            if env_vars:
+                sub_dir = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
+                try:
+                    for f in obs_dir.iterdir():
+                        if f.is_file():
+                            _copy_with_env_subst(f, sub_dir, env_vars)
+                    _upload_obs_files(
+                        apiurl,
+                        obs_project_name,
+                        package_path.name,
+                        sub_dir,
+                        message=message,
+                        dry_run=dry_run,
+                    )
+                finally:
+                    shutil.rmtree(sub_dir, ignore_errors=True)
+            else:
+                _upload_obs_files(
+                    apiurl,
+                    obs_project_name,
+                    package_path.name,
+                    obs_dir,
+                    message=message,
+                    dry_run=dry_run,
+                )
         promoted += 1
 
     suffix = " (dry run)" if dry_run else ""

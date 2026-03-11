@@ -17,6 +17,7 @@ from .common import (
     _col,
     _ENV_VAR_RE,
     _load_project_config_with_inheritance,
+    apply_env_substitution,
     build_project_meta,
     find_projects,
     is_package,
@@ -233,10 +234,14 @@ def _validate_env_vars(
 
 def _validate_obs_scm_revisions(
     service_files: list[Path],
+    env_vars: dict[str, str] | None = None,
 ) -> list[tuple[Path, str, str]]:
     """Check that every obs_scm revision in the given _service files exists remotely.
 
     Deduplicates by (url, revision) so shared repos only trigger one network call.
+    If *env_vars* is provided, ``${VAR}`` tokens in the file are substituted before
+    parsing.  Revisions that still contain unresolved ``${VAR}`` tokens after
+    substitution (because *env_vars* is None or incomplete) are silently skipped.
 
     Returns a list of (service_file, url, revision) for unresolvable revisions.
     """
@@ -244,8 +249,11 @@ def _validate_obs_scm_revisions(
     seen: dict[tuple[str, str], Path] = {}
     for svc_file in service_files:
         try:
-            root = ET.parse(svc_file).getroot()
-        except (ET.ParseError, OSError):
+            text = svc_file.read_text("utf-8")
+            if env_vars:
+                text = apply_env_substitution(text, env_vars, source=svc_file)
+            root = ET.fromstring(text)
+        except (ET.ParseError, OSError, SystemExit):
             continue
         for svc in root.findall("service"):
             if svc.get("name") != "obs_scm":
@@ -276,6 +284,8 @@ def _validate_obs_scm_revisions(
     for (url, revision), svc_file in seen.items():
         if revision.upper() == "HEAD":
             continue  # HEAD always resolves; skip the network call
+        if _ENV_VAR_RE.search(revision):
+            continue  # unresolved token — skip; env_vars not provided
         sha = _git_head_sha(url, revision)
         if sha is None:
             errors.append((svc_file, url, revision))
@@ -336,7 +346,7 @@ def cmd_project_verify(args) -> None:
     ref_errors = _validate_subproject_refs(scan_root)
     env_errors = _validate_env_vars(scan_root, env_vars)
     service_files = sorted(scan_root.rglob("obs/_service"))
-    scm_errors = _validate_obs_scm_revisions(service_files)
+    scm_errors = _validate_obs_scm_revisions(service_files, env_vars=env_vars)
 
     # Validate project: path entries against the live OBS instance when a
     # profile is available (provides the apiurl and env var values).
