@@ -44,7 +44,7 @@ jobs:
           | while read -r pr_number; do
             PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${pr_number}"
             echo "Stale PR #${pr_number}: deleting ${PR_ROOTPRJ}"
-            venv/bin/python -m percona_obs \
+            venv/bin/python -m percona_obs --verbose \
               -A "$OBS_APIURL" \
               -R "$PR_ROOTPRJ" \
               sync delete \
