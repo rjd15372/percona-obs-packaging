@@ -3,7 +3,7 @@
   <service name="obs_scm">
     <param name="url">https://github.com/rjd15372/percona-obs-packaging.git</param>
     <param name="scm">git</param>
-    <param name="revision">main</param>
+    <param name="revision">${PERCONA_OBS_PACKAGING_BRANCH}</param>
     <param name="version">_none_</param>
     <param name="extract">*.dsc</param>
     <param name="subdir">root/ppg/17.9/etcd/debian</param>
@@ -13,7 +13,7 @@
   <service name="obs_scm">
     <param name="url">https://github.com/rjd15372/percona-obs-packaging.git</param>
     <param name="scm">git</param>
-    <param name="revision">main</param>
+    <param name="revision">${PERCONA_OBS_PACKAGING_BRANCH}</param>
     <param name="version">_none_</param>
     <param name="extract">*</param>
     <param name="subdir">root/ppg/17.9/etcd/rpm</param>
