@@ -27,6 +27,22 @@ runs:
         python -m venv venv
         venv/bin/pip install --quiet -r requirements.txt
 
+    # Install OBS service binaries required by percona-obs sync push when
+    # packages have local services (obs_scm, go_modules, …).
+    # The openSUSE:Tools repository ships Ubuntu packages for these.
+    - name: Install OBS service binaries
+      shell: bash
+      run: |
+        . /etc/os-release
+        REPO_URL="https://download.opensuse.org/repositories/openSUSE:/Tools/xUbuntu_${VERSION_ID}"
+        curl -fsSL "${REPO_URL}/Release.key" \
+          | gpg --dearmor \
+          | sudo tee /usr/share/keyrings/obs-tools.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/obs-tools.gpg] ${REPO_URL}/ ./" \
+          | sudo tee /etc/apt/sources.list.d/obs-tools.list > /dev/null
+        sudo apt-get update -qq
+        sudo apt-get install -y obs-service-tar-scm obs-service-go-modules
+
     # Write ~/.config/osc/oscrc via Python so special characters in the
     # password are handled correctly without any shell quoting concerns.
     - name: Write osc credentials
