@@ -221,6 +221,7 @@ Provides:	%{sname}2_%{pgmajorversion}-client => %{postgismajorversion}.0
 The %{name}-client package contains the client tools and their libraries
 of PostGIS.
 
+%if %{sfcgal}
 %package devel
 Summary:	Development headers and libraries for PostGIS
 Requires:	%{name}%{?_isa} = %{version}-%{release}
@@ -232,6 +233,7 @@ Provides:	%{sname}2_%{pgmajorversion}-devel => %{postgismajorversion}.0
 The %{name}-devel package contains the header files and libraries
 needed to compile C or C++ applications which will directly interact
 with PostGIS.
+%endif
 
 %package docs
 Summary:	Extra documentation for PostGIS
@@ -421,9 +423,11 @@ fi
 %attr(755,root,root) %{pginstdir}/bin/pgtopo_export
 %attr(755,root,root) %{pginstdir}/bin/pgtopo_import
 
+%if %{sfcgal}
 %files devel
 %defattr(644,root,root)
 %{pginstdir}/lib/bitcode/postgis_sfcgal-3/postgis_sfcgal_legacy.bc
+%endif
 
 %files docs
 %defattr(-,root,root)
