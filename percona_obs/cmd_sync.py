@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import osc.conf
+import osc.core
 
 from .cmd_profile import _load_profile
 from .cmd_project import (
@@ -20,6 +21,7 @@ from .common import (
     _print_action,
     _print_aggregate,
     _print_ok,
+    _print_pending,
     _print_remove,
     _print_same,
     _print_update,
@@ -53,6 +55,7 @@ from .obs_api import (
 )
 from .services import (
     _get_all_obs_scm_infos,
+    _get_packaging_obs_scm_infos,
     _git_head_sha,
     _has_manual_services,
     _run_local_services,
@@ -150,7 +153,7 @@ def _content_matches_branch(
     if not service_file.is_file():
         return True
 
-    scm_infos = _get_all_obs_scm_infos(service_file)
+    scm_infos = _get_all_obs_scm_infos(service_file, env_vars)
     if not scm_infos:
         return True  # no obs_scm services; file MD5 match is sufficient
 
@@ -203,6 +206,65 @@ def _content_matches_branch(
             return False
 
     return True
+
+
+def _packaging_scm_has_updates(
+    apiurl: str,
+    obs_project: str,
+    package_name: str,
+    service_file: Path,
+    env_vars: dict[str, str] | None,
+) -> bool:
+    """Return True if any packaging obs_scm service has new commits vs OBS.
+
+    Fetches the .obsinfo for each packaging obs_scm service (debian/ or rpm/)
+    and compares the recorded commit hash against the current remote HEAD.
+    Returns False when remote HEAD cannot be resolved (conservative: no spurious
+    triggers) or when no packaging obs_scm services are present.
+    """
+    packaging_infos = _get_packaging_obs_scm_infos(service_file, env_vars)
+    if not packaging_infos:
+        return False
+    obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project, package_name, expanded=True)
+    for filename_prefix, scm_url, scm_revision in packaging_infos:
+        head_sha = _git_head_sha(scm_url, scm_revision)
+        if not head_sha:
+            logger.debug(
+                f"packaging scm check: cannot resolve remote HEAD "
+                f"for {scm_url}@{scm_revision}, skipping trigger"
+            )
+            continue
+        _obs_scm_prefix = f"_service:obs_scm:{filename_prefix}"
+        obsinfo_name = next(
+            (
+                name
+                for name in obs_md5s
+                if (
+                    name.startswith(filename_prefix) or name.startswith(_obs_scm_prefix)
+                )
+                and name.endswith(".obsinfo")
+            ),
+            None,
+        )
+        if not obsinfo_name:
+            continue
+        obsinfo_bytes = _fetch_obs_file_content(
+            apiurl, obs_project, package_name, obsinfo_name, expanded=True
+        )
+        if not obsinfo_bytes:
+            continue
+        obs_commit: str | None = None
+        for line in obsinfo_bytes.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("commit:"):
+                obs_commit = line.split(":", 1)[1].strip() or None
+                break
+        if obs_commit != head_sha:
+            logger.debug(
+                f"packaging scm: {filename_prefix!r} has new commits "
+                f"(OBS={obs_commit!r}, remote={head_sha!r})  {obs_project}/{package_name}"
+            )
+            return True
+    return False
 
 
 def _resolve_branch_decision(
@@ -697,6 +759,7 @@ def cmd_sync(args):
                 and service_file.is_file()
                 and _has_manual_services(service_file)
             )
+            files_changed = False
             if run_services:
                 if args.dry_run and not args.dry_run_remote:
                     # Pure dry-run: cannot run services; show service names and
@@ -708,7 +771,7 @@ def cmd_sync(args):
                             _print_update(
                                 f"service {svc_name}  {obs_project_name}/{package_path.name}"
                             )
-                    _upload_obs_files(
+                    files_changed = _upload_obs_files(
                         apiurl,
                         obs_project_name,
                         package_path.name,
@@ -731,7 +794,7 @@ def cmd_sync(args):
                                     _copy_with_env_subst(f, combined, env_vars)
                             for art_name in manual_artifacts:
                                 shutil.copy2(workdir / art_name, combined / art_name)
-                            _upload_obs_files(
+                            files_changed = _upload_obs_files(
                                 apiurl,
                                 obs_project_name,
                                 package_path.name,
@@ -750,7 +813,7 @@ def cmd_sync(args):
                         for f in obs_dir.iterdir():
                             if f.is_file():
                                 _copy_with_env_subst(f, sub_dir, env_vars)
-                        _upload_obs_files(
+                        files_changed = _upload_obs_files(
                             apiurl,
                             obs_project_name,
                             package_path.name,
@@ -761,7 +824,7 @@ def cmd_sync(args):
                     finally:
                         shutil.rmtree(sub_dir, ignore_errors=True)
                 else:
-                    _upload_obs_files(
+                    files_changed = _upload_obs_files(
                         apiurl,
                         obs_project_name,
                         package_path.name,
@@ -769,6 +832,20 @@ def cmd_sync(args):
                         message=message,
                         dry_run=dry_run_obs,
                     )
+            # If obs/ files are unchanged but packaging files (debian/ or rpm/)
+            # may have been pushed to the repo, trigger an OBS service run so
+            # OBS re-fetches those subtrees and queues a rebuild.
+            if not files_changed and not dry_run_obs and service_file.is_file():
+                if _packaging_scm_has_updates(
+                    apiurl,
+                    obs_project_name,
+                    package_path.name,
+                    service_file,
+                    env_vars,
+                ):
+                    _print_pending(f"trigger  {obs_project_name}/{package_path.name}")
+                    osc.core.runservice(apiurl, obs_project_name, package_path.name)
+                    _print_ok(f"trigger  {obs_project_name}/{package_path.name}")
 
     # --- orphan cleanup ---
     # Remove packages on OBS that no longer exist locally, but only when the
