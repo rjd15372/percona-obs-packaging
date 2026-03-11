@@ -277,7 +277,7 @@ BuildRequires:  llvm19-devel clang19-devel
 Requires:	llvm19
 %endif
 %if 0%{?fedora} || 0%{?rhel} >= 8
-BuildRequires:	clang
+BuildRequires:	clang llvm
 Requires:	llvm >= 19.0
 %endif
 
