@@ -105,12 +105,20 @@ def _multibuild_packages(obs_dir: Path, base_name: str) -> list[str]:
 
 
 def _content_matches_branch(
-    apiurl: str, branch_project: str, package_name: str, obs_dir: Path
+    apiurl: str,
+    branch_project: str,
+    package_name: str,
+    obs_dir: Path,
+    env_vars: dict[str, str] | None = None,
 ) -> bool:
     """Return True if local obs/ files match what is in branch_project on OBS.
 
     Two checks are performed:
     1. MD5s of all local obs/ files must match the corresponding files on OBS.
+       For files in _OBS_SUBSTITUTABLE (_service, _aggregate, _link), env_vars
+       substitution is applied before computing the MD5 so that tokens like
+       ${PERCONA_OBS_PACKAGING_BRANCH} compare correctly against the expanded
+       content that percona-obs uploaded to OBS.
     2. If an upstream obs_scm service is present, the commit hash recorded in
        the OBS obsinfo file must match the current remote HEAD.
 
@@ -125,7 +133,13 @@ def _content_matches_branch(
     for filepath in sorted(obs_dir.iterdir()):
         if not filepath.is_file():
             continue
-        local_md5 = hashlib.md5(filepath.read_bytes()).hexdigest()
+        if env_vars and filepath.name in _OBS_SUBSTITUTABLE:
+            content = apply_env_substitution(
+                filepath.read_text("utf-8"), env_vars, source=filepath
+            ).encode("utf-8")
+        else:
+            content = filepath.read_bytes()
+        local_md5 = hashlib.md5(content).hexdigest()
         if obs_md5s.get(filepath.name) != local_md5:
             logger.debug(
                 f"content check: {filepath.name} differs  {branch_project}/{package_name}"
@@ -191,6 +205,7 @@ def _resolve_branch_decision(
     branch_project: str,
     package_name: str,
     package_path: Path,
+    env_vars: dict[str, str] | None = None,
 ) -> bool:
     """Return True if the package should be aggregated from branch_project.
 
@@ -205,7 +220,9 @@ def _resolve_branch_decision(
     def _content_check(reason: str) -> bool:
         logger.debug(f"branch decision: content check  {label}  ({reason})")
         obs_dir = package_path / "obs"
-        matches = _content_matches_branch(apiurl, branch_project, package_name, obs_dir)
+        matches = _content_matches_branch(
+            apiurl, branch_project, package_name, obs_dir, env_vars
+        )
         if matches:
             logger.debug(f"branch decision: aggregate  {label}  (content matches)")
         else:
@@ -425,7 +442,7 @@ def cmd_sync(args):
                 obs_project_name, args.rootprj, branch_rootprj
             )
             use_aggregate = _resolve_branch_decision(
-                apiurl, branch_project, package_path.name, package_path
+                apiurl, branch_project, package_path.name, package_path, env_vars
             )
             if use_aggregate:
                 decisions[key] = "aggregate"
@@ -459,7 +476,7 @@ def cmd_sync(args):
                             _profile_apiurl_cache[branch_profile_name] = apiurl or ""
                     src_apiurl = _profile_apiurl_cache[branch_profile_name]
                     if _content_matches_branch(
-                        src_apiurl, src_proj, package_path.name, obs_dir
+                        src_apiurl, src_proj, package_path.name, obs_dir, env_vars
                     ):
                         decisions[key] = "skip_branch"
                     else:
