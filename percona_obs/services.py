@@ -79,6 +79,36 @@ def _get_upstream_obs_scm_info(
     return filename, url, revision
 
 
+def _get_all_obs_scm_infos(
+    service_file: Path,
+) -> list[tuple[str, str, str]]:
+    """Return (filename_prefix, url, revision) for every obs_scm service.
+
+    Unlike _get_upstream_obs_scm_info, packaging obs_scm services (those whose
+    subdir matches root/.+/debian or root/.+/rpm) are included.  Services that
+    lack a filename or url param are silently skipped.
+    """
+    results: list[tuple[str, str, str]] = []
+    for svc in ET.parse(service_file).getroot().findall("service"):
+        if svc.get("name") != "obs_scm":
+            continue
+        filename = ""
+        url = ""
+        revision = "HEAD"
+        for p in svc.findall("param"):
+            name = p.get("name", "")
+            val = (p.text or "").strip()
+            if name == "filename":
+                filename = val
+            elif name == "url":
+                url = val
+            elif name == "revision":
+                revision = val
+        if filename and url:
+            results.append((filename, url, revision))
+    return results
+
+
 def _find_upstream_obs_scm_filename(service_file: Path) -> str | None:
     """Return the filename param of the single upstream source obs_scm service.
 

@@ -52,7 +52,7 @@ from .obs_api import (
     _upload_obs_files,
 )
 from .services import (
-    _get_upstream_obs_scm_info,
+    _get_all_obs_scm_infos,
     _git_head_sha,
     _has_manual_services,
     _run_local_services,
@@ -150,52 +150,57 @@ def _content_matches_branch(
     if not service_file.is_file():
         return True
 
-    scm_info = _get_upstream_obs_scm_info(service_file)
-    if scm_info is None:
-        return True  # no upstream obs_scm; file MD5 match is sufficient
+    scm_infos = _get_all_obs_scm_infos(service_file)
+    if not scm_infos:
+        return True  # no obs_scm services; file MD5 match is sufficient
 
-    filename_prefix, scm_url, scm_revision = scm_info
-    head_sha = _git_head_sha(scm_url, scm_revision)
-    if not head_sha:
-        logger.debug(
-            f"content check: cannot resolve remote HEAD for {scm_url}@{scm_revision}"
+    for filename_prefix, scm_url, scm_revision in scm_infos:
+        head_sha = _git_head_sha(scm_url, scm_revision)
+        if not head_sha:
+            logger.debug(
+                f"content check: cannot resolve remote HEAD for {scm_url}@{scm_revision}"
+            )
+            return False  # conservative: can't verify → treat as changed
+
+        # OBS stores service-generated files with a "_service:<name>:" prefix when
+        # the service runs server-side; match both the bare name and that prefix.
+        _obs_scm_prefix = f"_service:obs_scm:{filename_prefix}"
+        obsinfo_name = next(
+            (
+                name
+                for name in obs_md5s
+                if (
+                    name.startswith(filename_prefix) or name.startswith(_obs_scm_prefix)
+                )
+                and name.endswith(".obsinfo")
+            ),
+            None,
         )
-        return False  # conservative: can't verify → treat as changed
+        if not obsinfo_name:
+            logger.debug(
+                f"content check: no obsinfo for {filename_prefix!r} "
+                f"in {branch_project}/{package_name}"
+            )
+            return False
 
-    # OBS stores service-generated files with a "_service:<name>:" prefix when
-    # the service runs server-side; match both the bare name and that prefix.
-    _obs_scm_prefix = f"_service:obs_scm:{filename_prefix}"
-    obsinfo_name = next(
-        (
-            name
-            for name in obs_md5s
-            if (name.startswith(filename_prefix) or name.startswith(_obs_scm_prefix))
-            and name.endswith(".obsinfo")
-        ),
-        None,
-    )
-    if not obsinfo_name:
-        logger.debug(f"content check: no obsinfo in {branch_project}/{package_name}")
-        return False
-
-    obsinfo_bytes = _fetch_obs_file_content(
-        apiurl, branch_project, package_name, obsinfo_name, expanded=True
-    )
-    if not obsinfo_bytes:
-        return False
-
-    obs_commit: str | None = None
-    for line in obsinfo_bytes.decode("utf-8", errors="replace").splitlines():
-        if line.startswith("commit:"):
-            obs_commit = line.split(":", 1)[1].strip() or None
-            break
-
-    if obs_commit != head_sha:
-        logger.debug(
-            f"content check: obs_scm commit mismatch "
-            f"(OBS={obs_commit!r}, remote={head_sha!r})  {branch_project}/{package_name}"
+        obsinfo_bytes = _fetch_obs_file_content(
+            apiurl, branch_project, package_name, obsinfo_name, expanded=True
         )
-        return False
+        if not obsinfo_bytes:
+            return False
+
+        obs_commit: str | None = None
+        for line in obsinfo_bytes.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("commit:"):
+                obs_commit = line.split(":", 1)[1].strip() or None
+                break
+
+        if obs_commit != head_sha:
+            logger.debug(
+                f"content check: obs_scm commit mismatch for {filename_prefix!r} "
+                f"(OBS={obs_commit!r}, remote={head_sha!r})  {branch_project}/{package_name}"
+            )
+            return False
 
     return True
 
