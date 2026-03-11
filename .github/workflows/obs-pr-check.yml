@@ -1,0 +1,173 @@
+name: OBS PR Check
+
+# For PRs that touch root/, create a PR-specific OBS project and build
+# packages there.  Unchanged packages are aggregated (binary reuse) from the
+# main branch's OBS project; only packages changed in this PR are built from
+# source.  Posts (or updates) a comment on the PR with the OBS project URL.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['root/**']
+    types: [opened, synchronize, reopened]
+
+jobs:
+  sync:
+    name: percona-obs sync push --branch-from main
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to post/update the PR comment.
+      pull-requests: write
+
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      OBS_APIURL: ${{ vars.OBS_APIURL }}
+      OBS_WEB_URL: ${{ vars.OBS_WEB_URL }}
+      OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
+      OBS_PR_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required: --branch-from runs git log <sha>..HEAD
+          # per package to detect which packages changed since main's last sync.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/obs-setup
+        with:
+          obs-apiurl: ${{ vars.OBS_APIURL }}
+          obs-user: ${{ vars.OBS_USER }}
+          obs-password: ${{ secrets.OBS_PASSWORD }}
+
+      # Two profiles are needed:
+      #
+      #   main    — points at the main branch's OBS project; used as the
+      #             --branch-from source so percona-obs can read each package's
+      #             last-sync SHA and decide aggregate vs. promote.
+      #
+      #   pr-N    — points at the PR-specific OBS project (rootprj:pr-N);
+      #             packages changed in this PR are synced here from source,
+      #             unchanged packages get an _aggregate pointing at main.
+      #
+      # PERCONA_OBS_PACKAGING_BRANCH for the PR profile is set to
+      # refs/pull/<N>/head — a GitHub pseudo-ref accessible via git ls-remote
+      # for all PRs including forks.  OBS's obs_scm service uses this ref to
+      # check out the PR's packaging files when it builds promoted packages.
+      - name: Create percona-obs profiles
+        run: |
+          PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${PR_NUMBER}"
+
+          venv/bin/python -m percona_obs \
+            -A "$OBS_APIURL" \
+            -R "$OBS_ROOTPRJ" \
+            -e "REMOTE_OBS_ORG_INTERCONNECT:" \
+            -e "PERCONA_OBS_PACKAGING_BRANCH:main" \
+            -e "PERCONA_OBS_PACKAGING_REPO:${{ github.server_url }}/${{ github.repository }}.git" \
+            profile create main
+
+          venv/bin/python -m percona_obs \
+            -A "$OBS_APIURL" \
+            -R "$PR_ROOTPRJ" \
+            -e "REMOTE_OBS_ORG_INTERCONNECT:" \
+            -e "PERCONA_OBS_PACKAGING_BRANCH:refs/pull/${PR_NUMBER}/head" \
+            -e "PERCONA_OBS_PACKAGING_REPO:${{ github.event.pull_request.head.repo.clone_url }}" \
+            profile create "pr-${PR_NUMBER}"
+
+      # --dirty skips the git-clean check (PR checkouts are typically a
+      # detached HEAD not reachable via git branch -r --contains HEAD).
+      # Output is tee'd to a file so the comment step can parse package counts.
+      - name: Sync PR to OBS
+        id: sync
+        run: |
+          venv/bin/python -m percona_obs \
+            -P "pr-${PR_NUMBER}" sync push \
+            --dirty \
+            --branch-from main \
+            | tee /tmp/sync-output.txt
+
+      # Always runs so the comment is updated even when sync fails.
+      # Uses shell: python to avoid heredoc/quoting complexity in YAML.
+      - name: Post OBS project comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_OUTCOME: ${{ steps.sync.outcome }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OBS_PR_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}
+        shell: python
+        run: |
+          import os, re, datetime, subprocess
+
+          pr_number        = os.environ['PR_NUMBER']
+          repo             = os.environ['GITHUB_REPOSITORY']
+          obs_web_url      = os.environ['OBS_WEB_URL'].rstrip('/')
+          obs_pr_rootprj   = os.environ['OBS_PR_ROOTPRJ']
+          sync_ok          = os.environ['SYNC_OUTCOME'] == 'success'
+          workflow_run_url = os.environ['WORKFLOW_RUN_URL']
+          timestamp        = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+
+          pr_rootprj  = f"{obs_pr_rootprj}:pr-{pr_number}"
+          project_url = f"{obs_web_url}/project/show/{pr_rootprj}"
+
+          if sync_ok:
+              try:
+                  output = open('/tmp/sync-output.txt').read()
+              except OSError:
+                  output = ''
+
+              # Aggregated packages produce '  @ <project>/<pkg>  → ...' lines.
+              aggregated = len(re.findall(r'^  @ ', output, re.MULTILINE))
+              # Promoted packages produce '  ~ N files ...' or '  + N files ...' lines.
+              promoted = len(re.findall(r'^  [~+] \d+ files ', output, re.MULTILINE))
+
+              lines = [
+                  '<!-- obs-pr-check -->',
+                  '## OBS Build Check',
+                  '',
+                  f'Packages for this PR are being built at **[{pr_rootprj}]({project_url})**.',
+                  '',
+                  '| | Packages |',
+                  '|---|---|',
+                  f'| Built from PR sources | {promoted} |',
+                  f'| Reused from `main` binaries | {aggregated} |',
+                  '',
+                  f'> _Updated: {timestamp}_',
+              ]
+          else:
+              lines = [
+                  '<!-- obs-pr-check -->',
+                  '## OBS Build Check — ❌ Sync failed',
+                  '',
+                  f'The OBS sync step failed. See the [workflow run]({workflow_run_url}) for details.',
+                  '',
+                  f'> _Updated: {timestamp}_',
+              ]
+
+          body = '\n'.join(lines)
+          with open('/tmp/pr-comment.md', 'w') as f:
+              f.write(body)
+
+          # Find an existing obs-pr-check comment to update; otherwise create one.
+          result = subprocess.run(
+              [
+                  'gh', 'api',
+                  f'repos/{repo}/issues/{pr_number}/comments',
+                  '--jq',
+                  '[.[] | select(.body | contains("<!-- obs-pr-check -->"))] | last | .id // empty',
+              ],
+              capture_output=True, text=True,
+          )
+          comment_id = result.stdout.strip()
+
+          if comment_id:
+              subprocess.run(
+                  ['gh', 'api', f'repos/{repo}/issues/comments/{comment_id}',
+                   '-X', 'PATCH', '-F', 'body=@/tmp/pr-comment.md'],
+                  check=True,
+              )
+          else:
+              subprocess.run(
+                  ['gh', 'api', f'repos/{repo}/issues/{pr_number}/comments',
+                   '-X', 'POST', '-F', 'body=@/tmp/pr-comment.md'],
+                  check=True,
+              )

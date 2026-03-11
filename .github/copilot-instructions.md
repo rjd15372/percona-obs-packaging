@@ -833,3 +833,69 @@ When branching is involved, always confirm which OBS instance is being queried:
 | OBS aggregate (mirrors another OBS project) | `obs-service-tar_scm/` |
 | Root project config | `root/project.yaml` |
 | Management script | `percona-obs` (commands: `sync push`, `sync delete`, `sync promote`, `build trigger`, `build status`, `build dependency`, `profile create`, `profile list`, `project verify`) |
+
+---
+
+## GitHub Actions CI/CD
+
+Three workflows automate the OBS sync lifecycle. All of them use a shared composite action for setup.
+
+### Composite action — `.github/actions/obs-setup`
+
+Reusable setup steps called by every workflow:
+1. Install Python 3.11 via `actions/setup-python`.
+2. Create `venv/` and `pip install -r requirements.txt`.
+3. Write `~/.config/osc/oscrc` from the `obs-apiurl`, `obs-user`, and `obs-password` inputs so `osc` (and therefore `percona-obs`) can authenticate against OBS.
+
+### Workflow 1 — `sync-main.yml` (sync on merge to main)
+
+**Trigger**: push to `main` where at least one file under `root/**` changed.
+
+**What it does**:
+1. Checks out the repo with full history (`fetch-depth: 0`) — required because `sync push` reads `git log` to detect per-package changes since the last OBS sync SHA stored in OBS revision comments.
+2. Runs `obs-setup`.
+3. Creates a `percona-obs` profile named `main` pointing at `OBS_ROOTPRJ` with env vars `PERCONA_OBS_PACKAGING_BRANCH=main`, `PERCONA_OBS_PACKAGING_REPO=<repo-url>`, and `REMOTE_OBS_ORG_INTERCONNECT=` (empty — no interconnect in the self-hosted setup).
+4. Runs `percona-obs -P main sync push` to create/update OBS projects and packages, and delete any OBS packages whose local directories were removed.
+5. Runs `.github/scripts/poll_obs_builds.py` to poll `build status` until all packages reach a terminal state (`succeeded`/`failed`/`unresolvable`/`disabled`), then sets a dedicated **"OBS Build"** commit status on the HEAD SHA (green/red) via the GitHub Statuses API.
+
+**Required repository config**: `OBS_APIURL`, `OBS_WEB_URL`, `OBS_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
+Permissions: `contents: read`, `statuses: write`.
+
+### Workflow 2 — `obs-pr-check.yml` (PR build check)
+
+**Trigger**: `pull_request` against `main` (types: `opened`, `synchronize`, `reopened`) where at least one file under `root/**` changed.
+
+**What it does**:
+1. Full-history checkout (same reason as above).
+2. Runs `obs-setup`.
+3. Creates **two** `percona-obs` profiles:
+   - `main` — points at `OBS_ROOTPRJ`; used only as the `--branch-from` source so the tool can read each package's last-sync SHA from the main OBS project.
+   - `pr-<N>` — points at `OBS_PR_ROOTPRJ:pr-<N>` (the PR-specific OBS root project). Its `PERCONA_OBS_PACKAGING_BRANCH` is set to `refs/pull/<N>/head` (a GitHub pseudo-ref resolvable via `git ls-remote` for all PRs including forks) and `PERCONA_OBS_PACKAGING_REPO` is set to `github.event.pull_request.head.repo.clone_url` (the fork's repo URL when the PR comes from a fork).
+4. Runs `percona-obs -P pr-<N> sync push --dirty --branch-from main`:
+   - For each package, compares `git log <main-last-sync-sha>..HEAD -- <package-path>`. If no commits → uploads an `_aggregate` file pointing at the corresponding main OBS package (binary reuse, no build needed). If changed → uploads full sources to the PR project.
+   - `--dirty` bypasses the git-clean check (PR checkouts are detached HEADs not reachable via `git branch -r --contains HEAD`).
+5. Posts (or updates) a PR comment with the OBS project URL and a table showing how many packages were built from source vs. aggregated from main. The comment is identified by an HTML marker `<!-- obs-pr-check -->` so it is updated in place on subsequent pushes to the PR. If the sync step failed, the comment is updated with an error notice instead.
+
+**Required repository config**: `OBS_APIURL`, `OBS_WEB_URL`, `OBS_ROOTPRJ`, `OBS_PR_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
+Permissions: `contents: read`, `pull-requests: write`.
+
+`OBS_PR_ROOTPRJ` is the base prefix for PR-specific projects, e.g. `home:Admin:percona:pr`. The full PR project becomes `home:Admin:percona:pr:pr-42`. It is intentionally separate from `OBS_ROOTPRJ` so PR projects live in a distinct namespace and are never confused with the main project tree.
+
+### Workflow 3 — `obs-pr-cleanup.yml` (delete PR project on close)
+
+**Trigger**: `pull_request` against `main` (type: `closed`) where at least one file under `root/**` changed.
+
+**What it does**: Runs `percona-obs -A $OBS_APIURL -R $OBS_PR_ROOTPRJ:pr-<N> sync delete --yes --recursive` to delete the PR-specific OBS root project and all its sub-projects. OBS 404 responses are handled gracefully (no error) so the cleanup is safe even if the PR check never ran. `--recursive` ensures projects are deleted even if a build was still in progress when the PR was closed.
+
+**Required repository config**: `OBS_APIURL`, `OBS_PR_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
+
+### Service file env vars
+
+All `obs/_service` files in `root/` use two env vars that `percona-obs` substitutes before uploading to OBS:
+
+| Variable | Purpose |
+|---|---|
+| `PERCONA_OBS_PACKAGING_BRANCH` | Git ref OBS checks out from the packaging repo (e.g. `main`, `refs/pull/42/head`) |
+| `PERCONA_OBS_PACKAGING_REPO` | HTTPS clone URL of the packaging repo OBS fetches from. Set to the fork's URL for PR profiles so OBS fetches packaging files from the correct repo when building promoted packages. |
+
+These are declared in each `percona-obs` profile via `-e KEY:VALUE` at profile-creation time and applied by `apply_env_substitution()` in `services.py` before the `_service` XML is uploaded.

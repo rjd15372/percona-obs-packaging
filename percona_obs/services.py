@@ -172,6 +172,9 @@ def _git_head_sha(url: str, revision: str) -> str | None:
     """Return the resolved commit SHA of revision on a remote git repository.
 
     Tries branch ref first, then dereferenced annotated tag, then lightweight tag.
+    If revision is already a full ref path (starts with "refs/"), it is tried
+    directly and takes priority over the derived patterns — this supports refs
+    like "refs/pull/42/head" used by GitHub PR workflows.
     Returns None if git is unavailable, the remote is unreachable, or
     no matching ref is found.
     """
@@ -180,6 +183,8 @@ def _git_head_sha(url: str, revision: str) -> str | None:
         f"refs/tags/{revision}^{{}}",
         f"refs/tags/{revision}",
     ]
+    if revision.startswith("refs/"):
+        patterns = [revision] + patterns
     try:
         logger.debug(f"resolving git revision {revision!r} on {url}")
         result = subprocess.run(
@@ -196,7 +201,9 @@ def _git_head_sha(url: str, revision: str) -> str | None:
             if len(parts) == 2:
                 sha, ref = parts[0].strip(), parts[1].strip()
                 ref_map[ref] = sha
-        # Preference order: branch, dereferenced annotated tag, lightweight tag
+        # Preference order: explicit ref path, branch, dereferenced annotated tag, lightweight tag
+        if revision.startswith("refs/") and revision in ref_map:
+            return ref_map[revision]
         branch_ref = f"refs/heads/{revision}"
         deref_tag_ref = f"refs/tags/{revision}^{{}}"
         lightweight_tag_ref = f"refs/tags/{revision}"
