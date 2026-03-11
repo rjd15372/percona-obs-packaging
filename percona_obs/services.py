@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .common import (
     _REPO_DIR,
+    apply_env_substitution,
     _print_ok,
     _print_pending,
     _print_same,
@@ -240,7 +241,10 @@ def _obs_scm_store(
 
 
 def _run_local_services(
-    obs_dir: Path, pkg_label: str = "", cache: bool = True
+    obs_dir: Path,
+    pkg_label: str = "",
+    cache: bool = True,
+    env_vars: dict[str, str] | None = None,
 ) -> tuple[Path, list[str]]:
     """Run all non-buildtime OBS services locally; return (workdir, manual_artifact_names).
 
@@ -260,17 +264,26 @@ def _run_local_services(
     Each service binary is expected at /usr/lib/obs/service/<name>.  If a
     binary is missing a warning is logged and the service is skipped.
 
+    If *env_vars* is provided, ``${VAR}`` tokens in the ``_service`` file are
+    substituted before parsing and before the file is written into the workdir.
+
     The caller owns cleanup of the returned workdir.
 
     Raises SystemExit on service failure.
     """
     service_file = obs_dir / "_service"
-    svc_root = ET.parse(service_file).getroot()
+    svc_text = service_file.read_text("utf-8")
+    if env_vars:
+        svc_text = apply_env_substitution(svc_text, env_vars, source=service_file)
+    svc_root = ET.fromstring(svc_text)
 
     workdir = Path(tempfile.mkdtemp(prefix="percona-obs-svc-"))
     for src in obs_dir.iterdir():
         if src.is_file():
-            shutil.copy2(src, workdir / src.name)
+            if src.name == "_service":
+                (workdir / "_service").write_text(svc_text, "utf-8")
+            else:
+                shutil.copy2(src, workdir / src.name)
 
     def _run_one(svc: ET.Element) -> list[str]:
         """Invoke one service binary; return list of generated filenames."""
