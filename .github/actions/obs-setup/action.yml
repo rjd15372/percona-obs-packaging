@@ -43,13 +43,18 @@ runs:
         echo "deb [signed-by=/usr/share/keyrings/obs-tools.gpg] ${REPO_URL}/ ./" \
           | sudo tee /etc/apt/sources.list.d/obs-tools.list > /dev/null
         sudo apt-get update -qq
-        sudo apt-get install -y obs-service-tar-scm python3-libarchive-c
+        sudo apt-get install -y obs-service-tar-scm
 
         # obs-service-go-modules is a shell script; install from source.
         TMP=$(mktemp -d)
         git clone --depth=1 https://github.com/openSUSE/obs-service-go_modules.git "$TMP"
         sudo install -m 755 "$TMP/go_modules" /usr/lib/obs/service/go_modules
         rm -rf "$TMP"
+
+        # go_modules uses '#!/usr/bin/env python3' so it picks up the Python
+        # set by actions/setup-python (3.11), not the system Python.
+        # Install libarchive-c for that same Python via pip.
+        pip install libarchive-c
 
     # Write ~/.config/osc/oscrc via Python so special characters in the
     # password are handled correctly without any shell quoting concerns.
