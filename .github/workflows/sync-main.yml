@@ -37,7 +37,7 @@ jobs:
           OBS_APIURL: ${{ vars.OBS_APIURL }}
           OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
         run: |
-          venv/bin/python -m percona_obs \
+          venv/bin/python -m percona_obs --verbose \
             -A "$OBS_APIURL" \
             -R "$OBS_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
@@ -46,7 +46,7 @@ jobs:
             profile create main
 
       - name: Sync to OBS
-        run: venv/bin/python -m percona_obs -P main sync push
+        run: venv/bin/python -m percona_obs --verbose -P main sync push
 
       # Poll OBS until all builds reach a terminal state, then set a dedicated
       # "OBS Build" commit status (success / failure / error on timeout).

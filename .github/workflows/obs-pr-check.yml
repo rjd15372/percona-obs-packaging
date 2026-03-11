@@ -57,7 +57,7 @@ jobs:
         run: |
           PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${PR_NUMBER}"
 
-          venv/bin/python -m percona_obs \
+          venv/bin/python -m percona_obs --verbose \
             -A "$OBS_APIURL" \
             -R "$OBS_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
@@ -65,7 +65,7 @@ jobs:
             -e "PERCONA_OBS_PACKAGING_REPO:${{ github.server_url }}/${{ github.repository }}.git" \
             profile create main
 
-          venv/bin/python -m percona_obs \
+          venv/bin/python -m percona_obs --verbose \
             -A "$OBS_APIURL" \
             -R "$PR_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
@@ -78,7 +78,7 @@ jobs:
       # A failure here aborts the workflow before the real sync runs.
       - name: Plan sync (dry run)
         run: |
-          venv/bin/python -u -m percona_obs \
+          venv/bin/python -u -m percona_obs --verbose \
             -P "pr-${PR_NUMBER}" sync push \
             --dirty \
             --dry-run \
@@ -92,7 +92,7 @@ jobs:
       - name: Sync PR to OBS
         id: sync
         run: |
-          venv/bin/python -u -m percona_obs \
+          venv/bin/python -u -m percona_obs --verbose \
             -P "pr-${PR_NUMBER}" sync push \
             --dirty \
             --branch-from main \
