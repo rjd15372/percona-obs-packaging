@@ -1,0 +1,53 @@
+name: OBS Stale PR Cleanup
+
+# Runs daily and deletes OBS projects for open PRs that have had no
+# activity for more than 7 days.  The delete is a no-op when a PR never
+# triggered obs-pr-check (i.e. it did not touch root/).
+# Can also be triggered manually via workflow_dispatch.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    name: Clean up OBS projects for stale PRs
+    runs-on: ubuntu-latest
+
+    env:
+      OBS_APIURL: ${{ vars.OBS_APIURL }}
+      OBS_PR_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/obs-setup
+        with:
+          obs-apiurl: ${{ vars.OBS_APIURL }}
+          obs-user: ${{ vars.OBS_USER }}
+          obs-password: ${{ secrets.OBS_PASSWORD }}
+
+      # List open PRs with no activity in the last 7 days and delete their
+      # OBS projects.  jq's `now` is a Unix timestamp; subtracting 7*86400
+      # seconds and converting with `todate` gives an ISO-8601 string that
+      # compares correctly against GitHub's updatedAt field.
+      - name: Delete OBS projects for stale PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr list \
+            --state open \
+            --json number,updatedAt \
+            --limit 200 \
+            --jq '.[] | select(.updatedAt < ((now - 7*86400) | todate)) | .number' \
+          | while read -r pr_number; do
+            PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${pr_number}"
+            echo "Stale PR #${pr_number}: deleting ${PR_ROOTPRJ}"
+            venv/bin/python -m percona_obs \
+              -A "$OBS_APIURL" \
+              -R "$PR_ROOTPRJ" \
+              sync delete \
+              --yes \
+              --recursive
+          done
