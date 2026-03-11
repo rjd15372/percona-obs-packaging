@@ -29,7 +29,7 @@
 %global geosfullversion 3.13.1
 %global geosinstdir /usr
 %global gdalfullversion 3.4.3
-%global gdalinstdir /usr/gdal3.4
+%global gdalinstdir /usr
 %global projfullversion 9.6.0
 %global projinstdir /usr
 %global libgeotiffmajorversion %{nil}
@@ -288,7 +288,7 @@ This packages provides JIT support for postgis35
 %prep
 %setup -q -n percona-postgis-%{version}
 %{__cp} -p %{SOURCE2} .
-# Copy .pdf file to top directory before installing.
+%{__mv} postgis.pdf %{sname}-%{version}.pdf
 
 %build
 LDFLAGS="-Wl,-rpath,%{geosinstdir}/lib64 ${LDFLAGS}" ; export LDFLAGS
