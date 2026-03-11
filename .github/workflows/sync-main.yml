@@ -14,7 +14,8 @@ jobs:
     name: percona-obs sync push
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Required to push the badge JSON to the badges branch.
+      contents: write
       # Required to post the "OBS Build" commit status.
       statuses: write
 
@@ -50,9 +51,38 @@ jobs:
       # Poll OBS until all builds reach a terminal state, then set a dedicated
       # "OBS Build" commit status (success / failure / error on timeout).
       - name: Poll OBS build status
+        id: poll
         env:
           GH_TOKEN: ${{ github.token }}
           OBS_APIURL: ${{ vars.OBS_APIURL }}
           OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
           OBS_WEB_URL: ${{ vars.OBS_WEB_URL }}
         run: venv/bin/python .github/scripts/poll_obs_builds.py
+
+      # Push the badge JSON to the orphan `badges` branch so it can be
+      # embedded in README.md via a shields.io endpoint badge.
+      # Runs even when the poll step fails so the badge always reflects the
+      # latest build outcome.
+      - name: Publish OBS build badge
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BADGE=$(base64 -w0 /tmp/obs-build-badge.json)
+          FILE_SHA=$(gh api \
+            "repos/$GITHUB_REPOSITORY/contents/obs-build-badge.json?ref=badges" \
+            --jq '.sha' 2>/dev/null || echo "")
+          if [ -n "$FILE_SHA" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/contents/obs-build-badge.json" \
+              -X PUT \
+              -f message="ci: update OBS build badge" \
+              -f content="$BADGE" \
+              -f branch=badges \
+              -f sha="$FILE_SHA"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/contents/obs-build-badge.json" \
+              -X PUT \
+              -f message="ci: update OBS build badge" \
+              -f content="$BADGE" \
+              -f branch=badges
+          fi
