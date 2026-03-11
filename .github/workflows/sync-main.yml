@@ -1,0 +1,58 @@
+name: Sync to OBS (main)
+
+# Runs whenever a push to main touches any file under root/.
+# Syncs the full package tree to OBS, creating or updating projects and
+# packages as needed, and removing any OBS packages that were deleted locally.
+
+on:
+  push:
+    branches: [main]
+    paths: ['root/**']
+
+jobs:
+  sync:
+    name: percona-obs sync push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to post the "OBS Build" commit status.
+      statuses: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required: sync push reads git log to detect
+          # per-package changes since the last OBS sync commit SHA.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/obs-setup
+        with:
+          obs-apiurl: ${{ vars.OBS_APIURL }}
+          obs-user: ${{ vars.OBS_USER }}
+          obs-password: ${{ secrets.OBS_PASSWORD }}
+
+      - name: Create percona-obs profile
+        env:
+          OBS_APIURL: ${{ vars.OBS_APIURL }}
+          OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
+        run: |
+          venv/bin/python -m percona_obs \
+            -A "$OBS_APIURL" \
+            -R "$OBS_ROOTPRJ" \
+            -e "REMOTE_OBS_ORG_INTERCONNECT:" \
+            -e "PERCONA_OBS_PACKAGING_BRANCH:main" \
+            -e "PERCONA_OBS_PACKAGING_REPO:${{ github.server_url }}/${{ github.repository }}.git" \
+            profile create main
+
+      - name: Sync to OBS
+        run: venv/bin/python -m percona_obs -P main sync push
+
+      # Poll OBS until all builds reach a terminal state, then set a dedicated
+      # "OBS Build" commit status (success / failure / error on timeout).
+      - name: Poll OBS build status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBS_APIURL: ${{ vars.OBS_APIURL }}
+          OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
+          OBS_WEB_URL: ${{ vars.OBS_WEB_URL }}
+        run: venv/bin/python .github/scripts/poll_obs_builds.py

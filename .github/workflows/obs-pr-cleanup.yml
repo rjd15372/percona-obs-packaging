@@ -1,0 +1,46 @@
+name: OBS PR Cleanup
+
+# When a PR is closed (merged or abandoned), delete the PR-specific OBS
+# project that was created by obs-pr-check.yml.  The delete is a no-op if
+# the project never existed (e.g. the PR was closed before the check ran).
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['root/**']
+    types: [closed]
+
+jobs:
+  cleanup:
+    name: percona-obs sync delete pr-${{ github.event.number }}
+    runs-on: ubuntu-latest
+
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      OBS_APIURL: ${{ vars.OBS_APIURL }}
+      OBS_PR_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/obs-setup
+        with:
+          obs-apiurl: ${{ vars.OBS_APIURL }}
+          obs-user: ${{ vars.OBS_USER }}
+          obs-password: ${{ secrets.OBS_PASSWORD }}
+
+      # Delete the PR's root project and all its sub-projects.
+      # --yes skips the confirmation prompt.
+      # --recursive ensures OBS deletes projects that still contain packages
+      # (e.g. if a build was in progress when the PR was closed).
+      # 404 responses are handled gracefully by percona-obs (no error).
+      - name: Delete PR OBS project
+        run: |
+          PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${PR_NUMBER}"
+
+          venv/bin/python -m percona_obs \
+            -A "$OBS_APIURL" \
+            -R "$PR_ROOTPRJ" \
+            sync delete \
+            --yes \
+            --recursive

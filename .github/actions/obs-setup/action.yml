@@ -1,0 +1,49 @@
+name: 'OBS Tooling Setup'
+description: >
+  Install percona-obs Python dependencies and write osc credentials.
+  Must run after actions/checkout so requirements.txt is available.
+
+inputs:
+  obs-apiurl:
+    description: 'OBS API URL (e.g. http://my-obs:3000)'
+    required: true
+  obs-user:
+    description: 'OBS username'
+    required: true
+  obs-password:
+    description: 'OBS password'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install percona-obs
+      shell: bash
+      run: |
+        python -m venv venv
+        venv/bin/pip install --quiet -r requirements.txt
+
+    # Write ~/.config/osc/oscrc via Python so special characters in the
+    # password are handled correctly without any shell quoting concerns.
+    - name: Write osc credentials
+      shell: bash
+      env:
+        OBS_APIURL: ${{ inputs.obs-apiurl }}
+        OBS_USER: ${{ inputs.obs-user }}
+        OBS_PASSWORD: ${{ inputs.obs-password }}
+      run: |
+        python3 - <<'PYEOF'
+        import configparser, os, pathlib
+        apiurl = os.environ['OBS_APIURL']
+        c = configparser.RawConfigParser()
+        c['general'] = {'apiurl': apiurl}
+        c[apiurl] = {'user': os.environ['OBS_USER'], 'pass': os.environ['OBS_PASSWORD']}
+        p = pathlib.Path.home() / '.config' / 'osc' / 'oscrc'
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'w') as f:
+            c.write(f)
+        PYEOF
