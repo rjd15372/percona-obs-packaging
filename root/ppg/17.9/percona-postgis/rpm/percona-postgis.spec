@@ -3,7 +3,7 @@
 %global postgisminorversion 5
 %global postgissomajorversion 3
 %define pgmajorversion 17
-%global postgiscurrmajorversion %(echo %{postgismajorversion}|tr -d '.')
+%global postgiscurrmajorversion 3
 %global sname	postgis
 
 #%pgdg_set_gis_variables
@@ -102,7 +102,7 @@ Version:	1.0.0
 Release:	1%{?dist}
 License:	GPLv2+
 Source0:	percona-postgis-%{version}.tar.gz
-Source2:        postgis-%{version}.pdf
+Source2:        postgis.pdf
 Source4:	%{sname}%{postgiscurrmajorversion}-filter-requires-perl-Pg.sh
 
 URL:		https://www.postgis.net/
