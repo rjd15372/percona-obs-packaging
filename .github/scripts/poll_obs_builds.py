@@ -20,6 +20,7 @@ OBS_INITIAL_WAIT    Seconds to wait before the first poll so OBS has time to
                     schedule builds after a fresh service upload (default: 30)
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -89,7 +90,39 @@ def set_commit_status(state: str, description: str) -> None:
 # Build-state classification
 # ---------------------------------------------------------------------------
 NON_TERMINAL = {"building", "dispatching", "scheduled", "blocked", "finished"}
-FAILURE_STATES = {"failed", "unresolvable", "broken"}
+FAILED_STATES = {"failed"}
+BROKEN_STATES = {"broken"}
+UNRESOLVABLE_STATES = {"unresolvable"}
+FAILURE_STATES = FAILED_STATES | BROKEN_STATES | UNRESOLVABLE_STATES
+
+# ---------------------------------------------------------------------------
+# Badge helper
+# ---------------------------------------------------------------------------
+_BADGE_PATH = "/tmp/obs-build-badge.json"
+
+
+def write_badge(
+    succeeded: int,
+    failed: int,
+    broken: int,
+    unresolvable: int,
+    timed_out: bool = False,
+) -> None:
+    """Write a shields.io endpoint JSON badge to _BADGE_PATH."""
+    msg = f"\u2714 {succeeded}  \u2717 {failed}  \u26d4 {broken}  \u26a0 {unresolvable}"
+    if timed_out:
+        color = "orange"
+        msg = f"timed out \u2014 {msg}"
+    elif failed > 0 or broken > 0:
+        color = "red"
+    elif unresolvable > 0:
+        color = "yellow"
+    else:
+        color = "brightgreen"
+    badge = {"schemaVersion": 1, "label": "OBS build", "message": msg, "color": color}
+    with open(_BADGE_PATH, "w") as fh:
+        json.dump(badge, fh)
+
 
 # ---------------------------------------------------------------------------
 # Set pending status and wait for OBS to schedule the builds
@@ -114,7 +147,10 @@ while True:
 
     total = sum(state_counts.values())
     still_building = sum(state_counts.get(s, 0) for s in NON_TERMINAL)
-    failures = sum(state_counts.get(s, 0) for s in FAILURE_STATES)
+    succeeded = state_counts.get("succeeded", 0)
+    failed = sum(state_counts.get(s, 0) for s in FAILED_STATES)
+    broken = sum(state_counts.get(s, 0) for s in BROKEN_STATES)
+    unresolvable = sum(state_counts.get(s, 0) for s in UNRESOLVABLE_STATES)
     elapsed = int(time.monotonic() - start)
 
     summary = ", ".join(f"{s}={n}" for s, n in sorted(state_counts.items()))
@@ -127,6 +163,7 @@ while True:
         msg = f"Timed out after {poll_timeout // 60}min — {still_building} build(s) still running"
         print(f"ERROR: {msg}", file=sys.stderr)
         set_commit_status("error", msg)
+        write_badge(succeeded, failed, broken, unresolvable, timed_out=True)
         sys.exit(2)
 
     time.sleep(poll_interval)
@@ -134,13 +171,21 @@ while True:
 # ---------------------------------------------------------------------------
 # Report final outcome
 # ---------------------------------------------------------------------------
-if failures:
-    msg = f"{failures} build(s) failed or unresolvable"
+write_badge(succeeded, failed, broken, unresolvable)
+
+if failed or broken or unresolvable:
+    parts = []
+    if failed:
+        parts.append(f"{failed} failed")
+    if broken:
+        parts.append(f"{broken} broken")
+    if unresolvable:
+        parts.append(f"{unresolvable} unresolvable")
+    msg = ", ".join(parts)
     print(f"FAIL: {msg}", file=sys.stderr)
     set_commit_status("failure", msg)
     sys.exit(1)
 
-succeeded = state_counts.get("succeeded", 0)
 msg = f"{succeeded} build(s) succeeded"
 print(f"OK: {msg}")
 set_commit_status("success", msg)
