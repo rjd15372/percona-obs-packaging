@@ -699,6 +699,7 @@ def cmd_sync(args):
                         obs_dir,
                         pkg_label=f"{obs_project_name}/{package_path.name}",
                         cache=not args.no_cache,
+                        env_vars=env_vars,
                     )
                     try:
                         combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
@@ -903,6 +904,7 @@ def cmd_sync_promote(args) -> None:
                 obs_dir,
                 pkg_label=f"{obs_project_name}/{package_path.name}",
                 cache=not args.no_cache,
+                env_vars=env_vars,
             )
             try:
                 combined = Path(tempfile.mkdtemp(prefix="percona-obs-upload-"))
