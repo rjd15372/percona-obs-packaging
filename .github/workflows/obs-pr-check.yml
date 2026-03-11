@@ -75,9 +75,8 @@ jobs:
 
       # Dry run: shows the sync plan (which packages will be promoted vs
       # aggregated) before the real sync starts, making progress visible early.
-      # continue-on-error so a dry-run failure never blocks the actual sync.
+      # A failure here aborts the workflow before the real sync runs.
       - name: Plan sync (dry run)
-        continue-on-error: true
         run: |
           venv/bin/python -u -m percona_obs \
             -P "pr-${PR_NUMBER}" sync push \
