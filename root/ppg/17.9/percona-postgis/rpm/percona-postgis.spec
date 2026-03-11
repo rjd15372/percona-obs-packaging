@@ -6,6 +6,8 @@
 %global postgiscurrmajorversion 3
 %global sname	postgis
 
+%define pginstdir /usr/pgsql-%{pgmajorversion}/
+
 #%pgdg_set_gis_variables
 
 # Override some variables. PostGIS 3.3 is best served with GeOS 3.11,
