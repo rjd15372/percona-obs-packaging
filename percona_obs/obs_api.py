@@ -708,7 +708,7 @@ def _upload_obs_files(
     obs_dir: Path,
     message: str = "",
     dry_run: bool = False,
-) -> None:
+) -> bool:
     """Upload changed files from obs_dir to OBS as a single committed revision.
 
     Each changed file is staged with ?rev=upload (no revision created yet).
@@ -723,6 +723,8 @@ def _upload_obs_files(
     certain changes. In dry-run mode, OBS-only files are shown with '!' rather
     than '-' because they may be service-generated artifacts whose fate cannot
     be determined without running the services.
+
+    Returns True if any files were uploaded/committed, False if nothing changed.
     """
     _print_pending(f"files  {obs_project_name}/{package_name}")
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project_name, package_name)
@@ -781,7 +783,7 @@ def _upload_obs_files(
     if not certain and not uncertain:
         logger.debug(f"no files changed: {obs_project_name}/{package_name}")
         _print_same(f"{len(local_files)} files  {obs_project_name}/{package_name}")
-        return
+        return False
 
     if not dry_run:
         commit_query: dict = {"cmd": "commit"}
@@ -814,3 +816,4 @@ def _upload_obs_files(
         print(
             f"      |_ {_col(_YELLOW, '!')} {name}  (service output, skipped in dry-run)"
         )
+    return True
