@@ -277,8 +277,9 @@ BuildRequires:  llvm19-devel clang19-devel
 Requires:	llvm19
 %endif
 %if 0%{?fedora} || 0%{?rhel} >= 8
-Requires:	llvm => 19.0
-%%endif
+BuildRequires:	clang
+Requires:	llvm >= 19.0
+%endif
 
 %description llvmjit
 This packages provides JIT support for postgis35
