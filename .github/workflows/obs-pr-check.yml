@@ -188,9 +188,9 @@ jobs:
                       '| Repository | \u2714 Succeeded | \u2717 Failed | \u26d4 Broken | \u26a0 Unresolvable | \u2014 Excluded |',
                       '|---|---|---|---|---|---|',
                   ]
-                  for repo, counts in sorted(repos.items()):
+                  for obs_repo, counts in sorted(repos.items()):
                       lines.append(
-                          f'| {repo} '
+                          f'| {obs_repo} '
                           f'| {counts.get("succeeded", 0)} '
                           f'| {counts.get("failed", 0)} '
                           f'| {counts.get("broken", 0)} '
