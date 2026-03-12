@@ -59,7 +59,7 @@ jobs:
         run: |
           PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${PR_NUMBER}"
 
-          venv/bin/python -m percona_obs --verbose \
+          venv/bin/python -m percona_obs \
             -A "$OBS_APIURL" \
             -R "$OBS_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
@@ -67,7 +67,7 @@ jobs:
             -e "PERCONA_OBS_PACKAGING_REPO:${{ github.server_url }}/${{ github.repository }}.git" \
             profile create main
 
-          venv/bin/python -m percona_obs --verbose \
+          venv/bin/python -m percona_obs \
             -A "$OBS_APIURL" \
             -R "$PR_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
@@ -80,7 +80,7 @@ jobs:
       # A failure here aborts the workflow before the real sync runs.
       - name: Plan sync (dry run)
         run: |
-          venv/bin/python -u -m percona_obs --verbose \
+          venv/bin/python -u -m percona_obs \
             -P "pr-${PR_NUMBER}" sync push \
             --dirty \
             --dry-run \
@@ -140,10 +140,10 @@ jobs:
           pr_rootprj  = f"{obs_pr_rootprj}:pr-{pr_number}"
           project_url = f"{obs_web_url}/project/show/{pr_rootprj}"
 
-          # Read badge JSON written by poll_obs_builds.py (if it ran).
-          badge: dict = {}
+          # Read per-repo details JSON written by poll_obs_builds.py (if it ran).
+          details: dict = {}
           try:
-              badge = json.load(open('/tmp/obs-build-badge.json'))
+              details = json.load(open('/tmp/obs-build-details.json'))
           except (OSError, json.JSONDecodeError):
               pass
 
@@ -180,8 +180,31 @@ jobs:
                   f'| Reused from `main` binaries | {aggregated} |',
               ]
 
-              if badge:
-                  lines += ['', f'**Build results:** {badge.get("message", "")}']
+              if details:
+                  repos = details.get('repos', {})
+                  total = details.get('total', {})
+                  lines += [
+                      '',
+                      '| Repository | \u2714 Succeeded | \u2717 Failed | \u26d4 Broken | \u26a0 Unresolvable | \u2014 Excluded |',
+                      '|---|---|---|---|---|---|',
+                  ]
+                  for repo, counts in sorted(repos.items()):
+                      lines.append(
+                          f'| {repo} '
+                          f'| {counts.get("succeeded", 0)} '
+                          f'| {counts.get("failed", 0)} '
+                          f'| {counts.get("broken", 0)} '
+                          f'| {counts.get("unresolvable", 0)} '
+                          f'| {counts.get("excluded", 0)} |'
+                      )
+                  lines.append(
+                      f'| **Total** '
+                      f'| **{total.get("succeeded", 0)}** '
+                      f'| **{total.get("failed", 0)}** '
+                      f'| **{total.get("broken", 0)}** '
+                      f'| **{total.get("unresolvable", 0)}** '
+                      f'| **{total.get("excluded", 0)}** |'
+                  )
 
               lines += ['', f'> _Updated: {timestamp}_']
           else:
