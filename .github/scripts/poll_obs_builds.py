@@ -60,6 +60,11 @@ obs_projects: set[str] = set()
 for obs_project, package_path in find_packages(REPO_ROOT, root_obs):
     project_config = load_yaml(package_path.parent / "project.yaml")
     obs_name = project_config.get("name") or obs_project
+    # When rootprj differs from root_obs (e.g. a PR-specific project like
+    # home:Admin:percona:pr-1 vs the canonical home:Admin:percona), substitute
+    # the root_obs prefix so builds are fetched from the correct project.
+    if rootprj != root_obs and obs_name.startswith(root_obs):
+        obs_name = rootprj + obs_name[len(root_obs) :]
     obs_projects.add(obs_name)
 
 print(f"Monitoring {len(obs_projects)} OBS project(s): {', '.join(sorted(obs_projects))}")
