@@ -625,10 +625,9 @@ def cmd_sync(args):
             else:
                 decisions[key] = "promote"
 
-    # --- Phase 2: dep-triggered promotion (bidirectional fixed-point) ---
+    # --- Phase 2: dep-triggered promotion (forward fixed-point) ---
     # If a package is being promoted (full sources), any package that depends
-    # on it — or that it depends on — and is currently an aggregate must also
-    # be promoted so the build environment stays consistent.
+    # on it must also be promoted so it is rebuilt against the new binaries.
     has_promotes = any(d == "promote" for d in decisions.values())
     has_branches = any(d in ("aggregate", "skip_branch") for d in decisions.values())
     if has_promotes and has_branches:
@@ -708,19 +707,6 @@ def cmd_sync(args):
                             _print_action(
                                 f"dep-promote: {dep_key[0]}/{dep_key[1]}"
                                 f"  (depends on promoted {pkg_name})"
-                            )
-                            decisions[dep_key] = "promote"
-                            changed = True
-                    # Backward: promote packages this one depends on.
-                    for dependency in fwd_deps.get(pkg_name, set()):
-                        dep_key = pkg_key_by_name.get(dependency)
-                        if dep_key and decisions.get(dep_key) in (
-                            "aggregate",
-                            "skip_branch",
-                        ):
-                            _print_action(
-                                f"dep-promote: {dep_key[0]}/{dep_key[1]}"
-                                f"  (is a build dep of promoted {pkg_name})"
                             )
                             decisions[dep_key] = "promote"
                             changed = True
