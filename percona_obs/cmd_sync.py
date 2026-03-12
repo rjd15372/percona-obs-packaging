@@ -866,7 +866,7 @@ def cmd_sync(args):
             # If obs/ files are unchanged but packaging files (debian/ or rpm/)
             # may have been pushed to the repo, trigger an OBS service run so
             # OBS re-fetches those subtrees and queues a rebuild.
-            if not files_changed and not dry_run_obs and service_file.is_file():
+            if not files_changed and service_file.is_file():
                 if _packaging_scm_has_updates(
                     apiurl,
                     obs_project_name,
@@ -875,8 +875,13 @@ def cmd_sync(args):
                     env_vars,
                 ):
                     _print_pending(f"trigger  {obs_project_name}/{package_path.name}")
-                    osc.core.runservice(apiurl, obs_project_name, package_path.name)
-                    _print_ok(f"trigger  {obs_project_name}/{package_path.name}")
+                    if dry_run_obs:
+                        _print_ok(
+                            f"trigger  {obs_project_name}/{package_path.name}  [dry-run]"
+                        )
+                    else:
+                        osc.core.runservice(apiurl, obs_project_name, package_path.name)
+                        _print_ok(f"trigger  {obs_project_name}/{package_path.name}")
 
     # --- orphan cleanup ---
     # Remove packages on OBS that no longer exist locally, but only when the
