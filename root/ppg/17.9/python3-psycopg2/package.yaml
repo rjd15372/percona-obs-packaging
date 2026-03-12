@@ -1,4 +1,1 @@
-disable:
-  build:
-    repo:
-      - Debian_13
+title: python3-psycopg2
