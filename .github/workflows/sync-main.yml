@@ -69,6 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          [ -f /tmp/obs-build-badge.json ] || exit 0
           BADGE=$(base64 -w0 /tmp/obs-build-badge.json)
           FILE_SHA=$(gh api \
             "repos/$GITHUB_REPOSITORY/contents/obs-build-badge.json?ref=badges" \
