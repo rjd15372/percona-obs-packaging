@@ -1,6 +1,7 @@
 import hashlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -17,6 +18,7 @@ from .cmd_project import (
 )
 from .common import (
     REPO_ROOT,
+    _REPO_DIR,
     _build_aggregate_xml,
     _print_action,
     _print_aggregate,
@@ -157,7 +159,7 @@ def _content_matches_branch(
     if not scm_infos:
         return True  # no obs_scm services; file MD5 match is sufficient
 
-    for filename_prefix, scm_url, scm_revision in scm_infos:
+    for filename_prefix, scm_url, scm_revision, _subdir in scm_infos:
         head_sha = _git_head_sha(scm_url, scm_revision)
         if not head_sha:
             logger.debug(
@@ -226,7 +228,7 @@ def _packaging_scm_has_updates(
     if not packaging_infos:
         return False
     obs_md5s = _fetch_obs_file_md5s(apiurl, obs_project, package_name, expanded=True)
-    for filename_prefix, scm_url, scm_revision in packaging_infos:
+    for filename_prefix, scm_url, scm_revision, subdir in packaging_infos:
         head_sha = _git_head_sha(scm_url, scm_revision)
         if not head_sha:
             logger.debug(
@@ -259,6 +261,35 @@ def _packaging_scm_has_updates(
                 obs_commit = line.split(":", 1)[1].strip() or None
                 break
         if obs_commit != head_sha:
+            # The remote HEAD moved since OBS last fetched.  If we have the
+            # subdir, do a local git log check to see whether any of those
+            # commits actually touch that directory.  If git log returns empty,
+            # there are no packaging changes and no trigger is needed.
+            if subdir and obs_commit:
+                try:
+                    git_result = subprocess.run(
+                        [
+                            "git",
+                            "log",
+                            "--oneline",
+                            f"{obs_commit}..{head_sha}",
+                            "--",
+                            subdir,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        cwd=_REPO_DIR,
+                        timeout=15,
+                    )
+                    if git_result.returncode == 0 and not git_result.stdout.strip():
+                        logger.debug(
+                            f"packaging scm: {filename_prefix!r} HEAD moved but "
+                            f"no commits touch {subdir!r}, skipping trigger  "
+                            f"{obs_project}/{package_name}"
+                        )
+                        continue
+                except (subprocess.TimeoutExpired, OSError):
+                    pass  # can't verify locally — fall through to trigger
             logger.debug(
                 f"packaging scm: {filename_prefix!r} has new commits "
                 f"(OBS={obs_commit!r}, remote={head_sha!r})  {obs_project}/{package_name}"
