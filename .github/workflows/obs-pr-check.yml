@@ -222,9 +222,12 @@ jobs:
               f.write(body)
 
           # Find an existing obs-pr-check comment to update; otherwise create one.
+          # --paginate fetches all pages so the search works even when the PR
+          # has more than 30 comments (GitHub API's default page size).
           result = subprocess.run(
               [
                   'gh', 'api',
+                  '--paginate',
                   f'repos/{repo}/issues/{pr_number}/comments',
                   '--jq',
                   '[.[] | select(.body | contains("<!-- obs-pr-check -->"))] | last | .id // empty',

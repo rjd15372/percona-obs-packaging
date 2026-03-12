@@ -124,8 +124,9 @@ def _content_matches_branch(
        substitution is applied before computing the MD5 so that tokens like
        ${PERCONA_OBS_PACKAGING_BRANCH} compare correctly against the expanded
        content that percona-obs uploaded to OBS.
-    2. If an upstream obs_scm service is present, the commit hash recorded in
-       the OBS obsinfo file must match the current remote HEAD.
+    2. For every obs_scm service present (upstream source and packaging
+       subdirs such as debian/ or rpm/), the commit hash recorded in the OBS
+       obsinfo file must match the current remote HEAD.
 
     Used as a fallback when the branch was synced with --dirty (so the revision
     SHA in the commit message cannot be trusted for git-log comparison).
