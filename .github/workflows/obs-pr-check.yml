@@ -111,6 +111,7 @@ jobs:
           OBS_APIURL: ${{ vars.OBS_APIURL }}
           OBS_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}:pr-${{ github.event.number }}
           OBS_WEB_URL: ${{ vars.OBS_WEB_URL }}
+          PYTHONPATH: ${{ github.workspace }}
         run: venv/bin/python .github/scripts/poll_obs_builds.py
 
       # Always runs so the comment is updated even when sync or poll fails.
