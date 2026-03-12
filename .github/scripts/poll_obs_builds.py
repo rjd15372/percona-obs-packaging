@@ -98,12 +98,14 @@ NON_TERMINAL = {"building", "dispatching", "scheduled", "blocked", "finished"}
 FAILED_STATES = {"failed"}
 BROKEN_STATES = {"broken"}
 UNRESOLVABLE_STATES = {"unresolvable"}
+EXCLUDED_STATES = {"excluded", "disabled"}
 FAILURE_STATES = FAILED_STATES | BROKEN_STATES | UNRESOLVABLE_STATES
 
 # ---------------------------------------------------------------------------
-# Badge helper
+# Badge and details helpers
 # ---------------------------------------------------------------------------
 _BADGE_PATH = "/tmp/obs-build-badge.json"
+_DETAILS_PATH = "/tmp/obs-build-details.json"
 
 
 def write_badge(
@@ -111,10 +113,11 @@ def write_badge(
     failed: int,
     broken: int,
     unresolvable: int,
+    excluded: int,
     timed_out: bool = False,
 ) -> None:
     """Write a shields.io endpoint JSON badge to _BADGE_PATH."""
-    msg = f"\u2714 {succeeded}  \u2717 {failed}  \u26d4 {broken}  \u26a0 {unresolvable}"
+    msg = f"\u2714 {succeeded}  \u2717 {failed}  \u26d4 {broken}  \u26a0 {unresolvable}  \u2014 {excluded}"
     if timed_out:
         color = "orange"
         msg = f"timed out \u2014 {msg}"
@@ -127,6 +130,38 @@ def write_badge(
     badge = {"schemaVersion": 1, "label": "OBS build", "message": msg, "color": color}
     with open(_BADGE_PATH, "w") as fh:
         json.dump(badge, fh)
+
+
+def write_details(
+    per_repo_counts: dict[str, dict[str, int]],
+    succeeded: int,
+    failed: int,
+    broken: int,
+    unresolvable: int,
+    excluded: int,
+) -> None:
+    """Write a per-repo build breakdown to _DETAILS_PATH."""
+    repos: dict[str, dict[str, int]] = {}
+    for repo, counts in sorted(per_repo_counts.items()):
+        repos[repo] = {
+            "succeeded": counts.get("succeeded", 0),
+            "failed": sum(counts.get(s, 0) for s in FAILED_STATES),
+            "broken": sum(counts.get(s, 0) for s in BROKEN_STATES),
+            "unresolvable": sum(counts.get(s, 0) for s in UNRESOLVABLE_STATES),
+            "excluded": sum(counts.get(s, 0) for s in EXCLUDED_STATES),
+        }
+    details = {
+        "repos": repos,
+        "total": {
+            "succeeded": succeeded,
+            "failed": failed,
+            "broken": broken,
+            "unresolvable": unresolvable,
+            "excluded": excluded,
+        },
+    }
+    with open(_DETAILS_PATH, "w") as fh:
+        json.dump(details, fh)
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +178,15 @@ start = time.monotonic()
 
 while True:
     state_counts: dict[str, int] = {}
+    per_repo_counts: dict[str, dict[str, int]] = {}
     for obs_name in obs_projects:
         results, _ = _fetch_build_results(apiurl, obs_name)
         for _pkg, repos in results.items():
-            for _repo, flavors in repos.items():
+            for repo, flavors in repos.items():
+                repo_counts = per_repo_counts.setdefault(repo, {})
                 for _flavor, code in flavors.items():
                     state_counts[code] = state_counts.get(code, 0) + 1
+                    repo_counts[code] = repo_counts.get(code, 0) + 1
 
     total = sum(state_counts.values())
     still_building = sum(state_counts.get(s, 0) for s in NON_TERMINAL)
@@ -156,6 +194,7 @@ while True:
     failed = sum(state_counts.get(s, 0) for s in FAILED_STATES)
     broken = sum(state_counts.get(s, 0) for s in BROKEN_STATES)
     unresolvable = sum(state_counts.get(s, 0) for s in UNRESOLVABLE_STATES)
+    excluded = sum(state_counts.get(s, 0) for s in EXCLUDED_STATES)
     elapsed = int(time.monotonic() - start)
 
     summary = ", ".join(f"{s}={n}" for s, n in sorted(state_counts.items()))
@@ -168,7 +207,8 @@ while True:
         msg = f"Timed out after {poll_timeout // 60}min — {still_building} build(s) still running"
         print(f"ERROR: {msg}", file=sys.stderr)
         set_commit_status("error", msg)
-        write_badge(succeeded, failed, broken, unresolvable, timed_out=True)
+        write_badge(succeeded, failed, broken, unresolvable, excluded, timed_out=True)
+        write_details(per_repo_counts, succeeded, failed, broken, unresolvable, excluded)
         sys.exit(2)
 
     time.sleep(poll_interval)
@@ -176,7 +216,8 @@ while True:
 # ---------------------------------------------------------------------------
 # Report final outcome
 # ---------------------------------------------------------------------------
-write_badge(succeeded, failed, broken, unresolvable)
+write_badge(succeeded, failed, broken, unresolvable, excluded)
+write_details(per_repo_counts, succeeded, failed, broken, unresolvable, excluded)
 
 if failed or broken or unresolvable:
     parts = []
