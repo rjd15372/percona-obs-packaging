@@ -37,7 +37,7 @@ jobs:
           OBS_APIURL: ${{ vars.OBS_APIURL }}
           OBS_ROOTPRJ: ${{ vars.OBS_ROOTPRJ }}
         run: |
-          venv/bin/python -m percona_obs --verbose \
+          venv/bin/python -m percona_obs \
             -A "$OBS_APIURL" \
             -R "$OBS_ROOTPRJ" \
             -e "REMOTE_OBS_ORG_INTERCONNECT:" \
