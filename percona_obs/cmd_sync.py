@@ -10,7 +10,7 @@ from pathlib import Path
 import osc.conf
 import osc.core
 
-from .cmd_profile import _load_profile
+from .cmd_profile import _load_profile, _load_profile_env_strings
 from .cmd_project import (
     _validate_obs_scm_revisions,
     _validate_project_path_refs,
@@ -115,6 +115,7 @@ def _content_matches_branch(
     package_name: str,
     obs_dir: Path,
     env_vars: dict[str, str] | None = None,
+    check_obsinfo: bool = True,
 ) -> bool:
     """Return True if local obs/ files match what is in branch_project on OBS.
 
@@ -124,12 +125,19 @@ def _content_matches_branch(
        substitution is applied before computing the MD5 so that tokens like
        ${PERCONA_OBS_PACKAGING_BRANCH} compare correctly against the expanded
        content that percona-obs uploaded to OBS.
-    2. For every obs_scm service present (upstream source and packaging
-       subdirs such as debian/ or rpm/), the commit hash recorded in the OBS
-       obsinfo file must match the current remote HEAD.
+    2. (Only when ``check_obsinfo`` is True) For every obs_scm service present
+       (upstream source and packaging subdirs such as debian/ or rpm/), the
+       commit hash recorded in the OBS obsinfo file must match the current
+       remote HEAD.
 
     Used as a fallback when the branch was synced with --dirty (so the revision
     SHA in the commit message cannot be trusted for git-log comparison).
+
+    Pass ``check_obsinfo=False`` when the caller has already verified via
+    git-log that the only file-level changes are cosmetic (e.g. env-var
+    substitutions).  In that case the obsinfo comparison would produce false
+    positives whenever the remote branch has advanced without touching the
+    package's actual content.
     """
     obs_md5s = _fetch_obs_file_md5s(apiurl, branch_project, package_name, expanded=True)
     if not obs_md5s:
@@ -151,6 +159,9 @@ def _content_matches_branch(
                 f"content check: {filepath.name} differs  {branch_project}/{package_name}"
             )
             return False
+
+    if not check_obsinfo:
+        return True
 
     service_file = obs_dir / "_service"
     if not service_file.is_file():
@@ -305,6 +316,7 @@ def _resolve_branch_decision(
     package_name: str,
     package_path: Path,
     env_vars: dict[str, str] | None = None,
+    branch_env_vars: dict[str, str] | None = None,
 ) -> bool:
     """Return True if the package should be aggregated from branch_project.
 
@@ -314,13 +326,25 @@ def _resolve_branch_decision(
     Fallback (content check): when the revision message cannot be trusted —
     no message, non-sync format, or a dirty sync — compare obs/ file MD5s and
     the upstream obs_scm commit hash against what OBS currently holds.
-    """
 
-    def _content_check(reason: str) -> bool:
+    ``branch_env_vars`` are the env vars of the branch-from profile.  They
+    are used for content comparison so that substitutable tokens (e.g.
+    ``${PERCONA_OBS_PACKAGING_BRANCH}``) are expanded the same way they were
+    when the branch project was last synced, rather than with the current
+    profile's values.  Falls back to ``env_vars`` when not provided.
+    """
+    check_env_vars = branch_env_vars if branch_env_vars is not None else env_vars
+
+    def _content_check(reason: str, check_obsinfo: bool = True) -> bool:
         logger.debug(f"branch decision: content check  {label}  ({reason})")
         obs_dir = package_path / "obs"
         matches = _content_matches_branch(
-            apiurl, branch_project, package_name, obs_dir, env_vars
+            apiurl,
+            branch_project,
+            package_name,
+            obs_dir,
+            check_env_vars,
+            check_obsinfo=check_obsinfo,
         )
         if matches:
             logger.debug(f"branch decision: aggregate  {label}  (content matches)")
@@ -343,15 +367,17 @@ def _resolve_branch_decision(
         return _content_check(f"branch was synced dirty at {short_sha}")
 
     changed = _has_package_changes_since(short_sha, package_path)
-    if changed:
-        logger.debug(
-            f"branch decision: sync  {label}  (local changes since {short_sha})"
-        )
-    else:
+    if not changed:
         logger.debug(
             f"branch decision: aggregate  {label}  (no changes since {short_sha})"
         )
-    return not changed
+        return True
+    # Git-log found commits since the last sync, but env-var expansion may
+    # still produce identical content (e.g. a hardcoded URL replaced with a
+    # ${VAR} token that expands to the same string).  Use the content check
+    # as the final arbiter so that such cosmetic changes do not force a
+    # source build.
+    return _content_check(f"git changes since {short_sha}", check_obsinfo=False)
 
 
 def _compute_branch_project(
@@ -434,12 +460,17 @@ def cmd_sync(args):
     # Resolve --branch-from profile.
     branch_apiurl: str = apiurl  # defaults to the target OBS instance
     branch_rootprj: str | None = None
+    branch_env_vars: dict[str, str] | None = None
     if args.branch_from:
         branch_profile = _load_profile(args.branch_from)
         _raw_branch_apiurl = branch_profile.get("apiurl", "")
         if _raw_branch_apiurl:
             branch_apiurl = _raw_branch_apiurl
         branch_rootprj = branch_profile.get("rootprj", "")
+        _branch_env_strings = _load_profile_env_strings(args.branch_from)
+        branch_env_vars = (
+            parse_env_overrides(_branch_env_strings) if _branch_env_strings else None
+        )
     seen_projects: set = set()
     local_project_names: set[str] = set()
     local_packages_by_project: dict[str, set[str]] = {}
@@ -541,7 +572,12 @@ def cmd_sync(args):
                 obs_project_name, args.rootprj, branch_rootprj
             )
             use_aggregate = _resolve_branch_decision(
-                apiurl, branch_project, package_path.name, package_path, env_vars
+                apiurl,
+                branch_project,
+                package_path.name,
+                package_path,
+                env_vars,
+                branch_env_vars=branch_env_vars,
             )
             if use_aggregate:
                 decisions[key] = "aggregate"
