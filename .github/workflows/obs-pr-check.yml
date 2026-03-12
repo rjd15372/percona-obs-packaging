@@ -18,6 +18,8 @@ jobs:
     permissions:
       # Required to post/update the PR comment.
       pull-requests: write
+      # Required to post the "OBS Build" commit status on the PR head commit.
+      statuses: write
 
     env:
       PR_NUMBER: ${{ github.event.number }}
@@ -98,29 +100,51 @@ jobs:
             --branch-from main \
             | tee /tmp/sync-output.txt
 
-      # Always runs so the comment is updated even when sync fails.
+      # Poll OBS until all builds in the PR project reach a terminal state.
+      # Fails the job (and PR check) if any build fails, is broken, or is
+      # unresolvable.  Skipped when the sync step did not succeed.
+      - name: Poll OBS build status
+        id: poll
+        if: steps.sync.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBS_APIURL: ${{ vars.OBS_APIURL }}
+          OBS_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}:pr-${{ github.event.number }}
+          OBS_WEB_URL: ${{ vars.OBS_WEB_URL }}
+        run: venv/bin/python .github/scripts/poll_obs_builds.py
+
+      # Always runs so the comment is updated even when sync or poll fails.
       # Uses shell: python to avoid heredoc/quoting complexity in YAML.
       - name: Post OBS project comment
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           SYNC_OUTCOME: ${{ steps.sync.outcome }}
+          POLL_OUTCOME: ${{ steps.poll.outcome }}
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           OBS_PR_ROOTPRJ: ${{ vars.OBS_PR_ROOTPRJ }}
         shell: python
         run: |
-          import os, re, datetime, subprocess
+          import json, os, re, datetime, subprocess
 
           pr_number        = os.environ['PR_NUMBER']
           repo             = os.environ['GITHUB_REPOSITORY']
           obs_web_url      = os.environ['OBS_WEB_URL'].rstrip('/')
           obs_pr_rootprj   = os.environ['OBS_PR_ROOTPRJ']
           sync_ok          = os.environ['SYNC_OUTCOME'] == 'success'
+          poll_outcome     = os.environ.get('POLL_OUTCOME', '')
           workflow_run_url = os.environ['WORKFLOW_RUN_URL']
           timestamp        = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
 
           pr_rootprj  = f"{obs_pr_rootprj}:pr-{pr_number}"
           project_url = f"{obs_web_url}/project/show/{pr_rootprj}"
+
+          # Read badge JSON written by poll_obs_builds.py (if it ran).
+          badge: dict = {}
+          try:
+              badge = json.load(open('/tmp/obs-build-badge.json'))
+          except (OSError, json.JSONDecodeError):
+              pass
 
           if sync_ok:
               try:
@@ -133,9 +157,19 @@ jobs:
               # Promoted packages produce '  ~ N files ...' or '  + N files ...' lines.
               promoted = len(re.findall(r'^  [~+] \d+ files ', output, re.MULTILINE))
 
+              # Determine heading based on poll outcome.
+              if poll_outcome == 'success':
+                  heading = '## OBS Build Check \u2014 \u2705 Builds passed'
+              elif poll_outcome == 'failure':
+                  heading = '## OBS Build Check \u2014 \u274c Builds failed'
+              elif poll_outcome == 'cancelled':
+                  heading = '## OBS Build Check \u2014 \u23f1\ufe0f Build polling cancelled'
+              else:
+                  heading = '## OBS Build Check'
+
               lines = [
                   '<!-- obs-pr-check -->',
-                  '## OBS Build Check',
+                  heading,
                   '',
                   f'Packages for this PR are being built at **[{pr_rootprj}]({project_url})**.',
                   '',
@@ -143,13 +177,16 @@ jobs:
                   '|---|---|',
                   f'| Built from PR sources | {promoted} |',
                   f'| Reused from `main` binaries | {aggregated} |',
-                  '',
-                  f'> _Updated: {timestamp}_',
               ]
+
+              if badge:
+                  lines += ['', f'**Build results:** {badge.get("message", "")}']
+
+              lines += ['', f'> _Updated: {timestamp}_']
           else:
               lines = [
                   '<!-- obs-pr-check -->',
-                  '## OBS Build Check — ❌ Sync failed',
+                  '## OBS Build Check \u2014 \u274c Sync failed',
                   '',
                   f'The OBS sync step failed. See the [workflow run]({workflow_run_url}) for details.',
                   '',
