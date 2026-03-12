@@ -1,5 +1,6 @@
 import argparse
 import logging
+import socket
 import sys
 
 import osc.conf
@@ -422,6 +423,7 @@ def main() -> None:
 
     if args.command not in _local_only_commands:
         osc.conf.get_config(override_apiurl=args.apiurl)
+        socket.setdefaulttimeout(30)
 
     try:
         args.func(args)
