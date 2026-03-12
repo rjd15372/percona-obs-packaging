@@ -82,22 +82,21 @@ def _get_upstream_obs_scm_info(
 def _parse_obs_scm_infos(
     svc_text: str,
     packaging_only: bool = False,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, str]]:
     """Parse obs_scm service entries from XML text already substituted with env vars.
 
-    Returns (filename_prefix, url, revision) for each matching obs_scm service.
-    Services without a filename or url param are skipped.
+    Returns (filename_prefix, url, revision, subdir) for each matching obs_scm
+    service.  Services without a filename or url param are skipped.
     If packaging_only is True, only services whose subdir matches
     _PACKAGING_SUBDIR_RE are returned; otherwise all obs_scm services are returned.
     """
-    results: list[tuple[str, str, str]] = []
+    results: list[tuple[str, str, str, str]] = []
     for svc in ET.fromstring(svc_text).findall("service"):
         if svc.get("name") != "obs_scm":
             continue
         subdir_el = svc.find("param[@name='subdir']")
-        is_packaging = subdir_el is not None and _PACKAGING_SUBDIR_RE.match(
-            (subdir_el.text or "").strip()
-        )
+        subdir = (subdir_el.text or "").strip() if subdir_el is not None else ""
+        is_packaging = bool(subdir) and bool(_PACKAGING_SUBDIR_RE.match(subdir))
         if packaging_only and not is_packaging:
             continue
         filename = ""
@@ -113,15 +112,15 @@ def _parse_obs_scm_infos(
             elif name == "revision":
                 revision = val
         if filename and url:
-            results.append((filename, url, revision))
+            results.append((filename, url, revision, subdir))
     return results
 
 
 def _get_all_obs_scm_infos(
     service_file: Path,
     env_vars: dict[str, str] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Return (filename_prefix, url, revision) for every obs_scm service.
+) -> list[tuple[str, str, str, str]]:
+    """Return (filename_prefix, url, revision, subdir) for every obs_scm service.
 
     Unlike _get_upstream_obs_scm_info, packaging obs_scm services (those whose
     subdir matches root/.+/debian or root/.+/rpm) are included.  Services that
@@ -139,8 +138,8 @@ def _get_all_obs_scm_infos(
 def _get_packaging_obs_scm_infos(
     service_file: Path,
     env_vars: dict[str, str] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Return (filename_prefix, url, revision) for packaging obs_scm services only.
+) -> list[tuple[str, str, str, str]]:
+    """Return (filename_prefix, url, revision, subdir) for packaging obs_scm services only.
 
     Packaging services are those whose subdir matches root/.+/(debian|rpm).
     Services without a filename or url param are skipped.
