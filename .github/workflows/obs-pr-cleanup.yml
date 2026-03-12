@@ -38,7 +38,7 @@ jobs:
         run: |
           PR_ROOTPRJ="${OBS_PR_ROOTPRJ}:pr-${PR_NUMBER}"
 
-          venv/bin/python -m percona_obs \
+          venv/bin/python -m percona_obs --verbose \
             -A "$OBS_APIURL" \
             -R "$PR_ROOTPRJ" \
             sync delete \
