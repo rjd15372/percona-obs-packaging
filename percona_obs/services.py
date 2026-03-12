@@ -261,16 +261,29 @@ def _git_head_sha(url: str, revision: str) -> str | None:
         patterns = [revision] + patterns
     try:
         logger.debug(f"resolving git revision {revision!r} on {url}")
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "ls-remote", "--", url] + patterns,
-            capture_output=True,
-            text=True,
-            timeout=15,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
-        if result.returncode != 0 or not result.stdout.strip():
+        try:
+            stdout_bytes, _ = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            # Close pipes immediately so the drain in communicate() cannot
+            # block on child processes that inherited the pipe descriptors
+            # (e.g. git credential/transport helpers).
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
+            proc.wait()
+            return None
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        if proc.returncode != 0 or not stdout.strip():
             return None
         ref_map = {}
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             parts = line.split("\t", 1)
             if len(parts) == 2:
                 sha, ref = parts[0].strip(), parts[1].strip()
