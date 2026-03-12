@@ -838,7 +838,7 @@ When branching is involved, always confirm which OBS instance is being queried:
 
 ## GitHub Actions CI/CD
 
-Three workflows automate the OBS sync lifecycle. All of them use a shared composite action for setup.
+Four workflows automate the OBS sync lifecycle. All of them use a shared composite action for setup.
 
 ### Composite action — `.github/actions/obs-setup`
 
@@ -859,7 +859,7 @@ Reusable setup steps called by every workflow:
 5. Runs `.github/scripts/poll_obs_builds.py` to poll `build status` until all packages reach a terminal state (`succeeded`/`failed`/`unresolvable`/`disabled`), then sets a dedicated **"OBS Build"** commit status on the HEAD SHA (green/red) via the GitHub Statuses API.
 
 **Required repository config**: `OBS_APIURL`, `OBS_WEB_URL`, `OBS_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
-Permissions: `contents: read`, `statuses: write`.
+Permissions: `contents: write`, `statuses: write`.
 
 ### Workflow 2 — `obs-pr-check.yml` (PR build check)
 
@@ -877,7 +877,7 @@ Permissions: `contents: read`, `statuses: write`.
 5. Posts (or updates) a PR comment with the OBS project URL and a table showing how many packages were built from source vs. aggregated from main. The comment is identified by an HTML marker `<!-- obs-pr-check -->` so it is updated in place on subsequent pushes to the PR. If the sync step failed, the comment is updated with an error notice instead.
 
 **Required repository config**: `OBS_APIURL`, `OBS_WEB_URL`, `OBS_ROOTPRJ`, `OBS_PR_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
-Permissions: `contents: read`, `pull-requests: write`.
+Permissions: `contents: read`, `pull-requests: write`, `statuses: write`.
 
 `OBS_PR_ROOTPRJ` is the base prefix for PR-specific projects, e.g. `home:Admin:percona:pr`. The full PR project becomes `home:Admin:percona:pr:pr-42`. It is intentionally separate from `OBS_ROOTPRJ` so PR projects live in a distinct namespace and are never confused with the main project tree.
 
@@ -886,6 +886,14 @@ Permissions: `contents: read`, `pull-requests: write`.
 **Trigger**: `pull_request` against `main` (type: `closed`) where at least one file under `root/**` changed.
 
 **What it does**: Runs `percona-obs -A $OBS_APIURL -R $OBS_PR_ROOTPRJ:pr-<N> sync delete --yes --recursive` to delete the PR-specific OBS root project and all its sub-projects. OBS 404 responses are handled gracefully (no error) so the cleanup is safe even if the PR check never ran. `--recursive` ensures projects are deleted even if a build was still in progress when the PR was closed.
+
+**Required repository config**: `OBS_APIURL`, `OBS_PR_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
+
+### Workflow 4 — `obs-stale-cleanup.yml` (daily cleanup of stale PR projects)
+
+**Trigger**: scheduled daily at 02:00 UTC, or manually via `workflow_dispatch`.
+
+**What it does**: Lists all open PRs that have had no activity for more than 7 days and runs `percona-obs sync delete --yes --recursive` against each PR's OBS project (`OBS_PR_ROOTPRJ:pr-<N>`). This prevents inactive PR projects from accumulating indefinitely on OBS. The delete is a no-op if the project never existed (e.g. the PR never touched `root/`).
 
 **Required repository config**: `OBS_APIURL`, `OBS_PR_ROOTPRJ`, `OBS_USER` (vars); `OBS_PASSWORD` (secret).
 
