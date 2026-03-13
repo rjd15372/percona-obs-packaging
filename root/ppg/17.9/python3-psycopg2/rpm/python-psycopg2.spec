@@ -86,5 +86,8 @@ done
 
 
 %changelog
+* Fri Mar 13 2026 Percona Build/Release Team <eng-build@percona.com> - 2.9.10-1
+- Release 2.9.10-1
+
 * Mon Mar 10 2026 Percona Build/Release Team <eng-build@percona.com> - 2.9.5-1
 - Release 2.9.5-1
