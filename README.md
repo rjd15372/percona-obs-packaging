@@ -1,6 +1,6 @@
 # percona-obs-packaging
 
-[![OBS Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/rjd15372/percona-obs-packaging/badges/obs-build-badge.json)](https://github.com/rjd15372/percona-obs-packaging/actions/workflows/sync-main.yml)
+[![OBS Build](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/rjd15372/percona-obs-packaging/badges/obs-build-badge.json)](https://build.opensuse.org/project/show/isv:percona)
 
 RPM and Debian **packaging metadata** for building Percona software packages against an
 [OpenSUSE Build Service (OBS)](https://build.opensuse.org/) instance.
@@ -8,6 +8,8 @@ RPM and Debian **packaging metadata** for building Percona software packages aga
 This repository does **not** contain upstream source code — only packaging files
 (`debian/`, `rpm/`, `obs/_service`, etc.). Sources are fetched at build time by the
 OBS services declared in each package's `obs/_service` file.
+
+The `main` branch of this repository is always synced to the [Percona project](https://build.opensuse.org/project/show/isv:percona) in OBS. Check the subprojects to find the Percona distribution you want to use.
 
 ---
 
