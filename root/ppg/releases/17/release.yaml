@@ -1,0 +1,3 @@
+project: ppg:17
+repository: ${PERCONA_OBS_PACKAGING_REPO}
+revision: ppg/17
