@@ -1,6 +1,6 @@
 description: 'Containers subproject for ppg:releases:17.
 
-  Rebuilds against ppg:releases:17:Updates when packages are updated.
+  Rebuilds against ppg:releases:17:updates when packages are updated.
 
   '
 project-config: '%if "%_repository" == "RockyLinux_9"
@@ -56,9 +56,7 @@ repositories:
   name: images
   paths:
   - repository: RockyLinux_9
-    subproject: ppg:releases:17:containers
-  - repository: RockyLinux_9
-    subproject: ppg:releases:17:Updates
+    subproject: ppg:releases:17:updates
   - repository: RockyLinux_9
     subproject: ppg:releases:17
   - repository: images
