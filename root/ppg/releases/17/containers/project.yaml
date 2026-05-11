@@ -1,0 +1,9 @@
+build:
+  disable: true
+description: 'Containers subproject for ppg:releases:17.
+
+  Builds are disabled; binaries are copied via osc release.
+
+  '
+repositories: []
+title: ppg releases 17 — containers
