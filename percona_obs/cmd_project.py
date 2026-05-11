@@ -1179,9 +1179,12 @@ def _build_upstream_release_url(
     if not url:
         return None
     if "github.com" in url:
+        clean = url.rstrip("/")
+        if clean.endswith(".git"):
+            clean = clean[:-4]
         if revision:
-            return f"{url.rstrip('/')}/releases/tag/{revision}"
-        return url
+            return f"{clean}/releases/tag/{revision}"
+        return clean
     if "git.postgresql.org" in url:
         parts = pkg_version.split(".")
         if len(parts) >= 2:
