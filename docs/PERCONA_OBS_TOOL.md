@@ -546,8 +546,7 @@ The process is PR-based:
 5. **Update release** (directory already exists):
    - Appends the new tag to `release.yaml`'s `releases:` list.
    - Prepends a new section to `CHANGELOG.md`.
-6. **Commits**, pushes the branch (`git push -u origin HEAD`), and opens a PR via
-   `gh pr create`. If `gh` is unavailable, prints manual instructions.
+6. **Commits** the generated files locally. Push the branch and open a PR manually.
 
 The git tag (e.g. `ppg/17.9-1`) is created automatically by `sync-main.yml` when
 the merge commit lands on `main`. That tag then triggers `obs-release.yml`.
