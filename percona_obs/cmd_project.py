@@ -1249,12 +1249,10 @@ def _build_changelog_section(
                 if release_url:
                     url_str = f" ({release_url})"
 
-        entry = f"- {pkg}: updated to upstream version {pkg_version}{url_str}"
-
         if release_versions is None or rel_ver is None:
-            added.append(entry)
+            added.append(f"- {pkg}: add upstream version {pkg_version}{url_str}")
         elif src_ver.split("-")[0] != rel_ver.split("-")[0]:
-            changed.append(entry)
+            changed.append(f"- {pkg}: update upstream version {pkg_version}{url_str}")
 
     if not source_versions:
         todo = "<!-- TODO: fill in manually -->"
