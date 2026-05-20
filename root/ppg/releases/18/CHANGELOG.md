@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [18.4-2] - 2026-05-20
+
+### Changed
+- percona-distribution-postgresql [container image]: update image 18.4-1 → 18.4-2
+  - updated: percona-pg_tde18 2.2.0-2.1 -> 2.2.0-3.1
+- percona-distribution-postgresql-upgrade [container image]: update image 18.4-1 → 18.4-2
+  - updated: percona-pg_tde17 2.2.0-3.1 -> 2.2.0-4.1
+  - updated: percona-pg_tde18 2.2.0-2.1 -> 2.2.0-3.1
+  - updated: percona-pgaudit17 17.1-5.4 -> 17.1-5.5
+- percona-distribution-postgresql-with-postgis [container image]: update image 18.4-1 → 18.4-2
+  - updated: percona-pg_tde18 2.2.0-2.1 -> 2.2.0-3.1
+
+### Fixed
+- percona-pg_tde18-2.2.0-3.1: Fixes pg_tde upgrade bug with empty key files and empty entries in a key file
+  - https://github.com/percona/pg_tde/pull/582
+
 ## [18.4-1] - 2026-05-19
 
 ### Added
