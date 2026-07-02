@@ -183,6 +183,13 @@ project-config: |
   Prefer: libncurses-dev
   # logrotate Recommends a cron daemon; Bullseye has both cron and bcron.
   Prefer: cron
+  Prefer: llvm-21-dev
+  Prefer: llvm-21
+  Prefer: clang-21
+  Substitute: llvm-dev llvm-21-dev
+  Substitute: clang clang-21
+  Ignore: llvm-11-dev
+  Ignore: clang-11
   %endif
 
   %if "%_repository" == "Debian_11" || "%_repository" == "Debian_13" || "%_repository" == "Ubuntu_24.04"
