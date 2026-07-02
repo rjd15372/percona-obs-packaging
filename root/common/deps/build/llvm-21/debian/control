@@ -131,6 +131,7 @@ Depends: ${misc:Depends},
  libclang-cpp21 (= ${binary:Version}),
  libz3-dev,
  libxml2-dev
+Provides: llvm-dev
 Description: Modular compiler and toolchain technologies, libraries and headers
  LLVM is a collection of libraries and tools that make it easy to build
  compilers, optimizers, just-in-time code generators, and many other
@@ -153,7 +154,7 @@ Depends: ${misc:Depends},
  libc6-dev,
  binutils
 Recommends: llvm-21-dev
-Provides: c++-compiler, c-compiler, objc-compiler
+Provides: clang, c++-compiler, c-compiler, objc-compiler
 Description: C, C++ and Objective-C compiler
  Clang project is a C, C++, Objective C and Objective C++ front-end
  based on the LLVM compiler.
