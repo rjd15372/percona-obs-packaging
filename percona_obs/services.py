@@ -41,6 +41,8 @@ def _is_kiwi_service(name: str) -> bool:
 _CACHE_DIR = _REPO_DIR / ".cache"
 _OBS_SCM_CACHE_DIR = _CACHE_DIR / "obs_scm"
 _SVC_CACHE_DIR = _CACHE_DIR / "services"
+_DOWNLOAD_URL_CACHE_DIR = _CACHE_DIR / "download_url"
+_CARGO_VENDOR_CACHE_DIR = _CACHE_DIR / "cargo_vendor"
 
 # Matches the subdir param of obs_scm services that fetch packaging files
 # from this repo (e.g. "root/ppg/17/percona-haproxy/debian" or the variable
@@ -190,8 +192,15 @@ def _get_packaging_obs_scm_infos(
     return _parse_obs_scm_infos(svc_text, packaging_only=True)
 
 
-def _find_upstream_obs_scm_filename(service_file: Path) -> str | None:
+def _find_upstream_obs_scm_filename(
+    svc_root: ET.Element, service_file: Path
+) -> str | None:
     """Return the filename param of the single upstream source obs_scm service.
+
+    *svc_root* must be the parsed ``_service`` XML root with macro/env
+    substitution already applied, so that filename params like
+    ``foo_%!{PG_MAJOR_VERSION}`` are resolved and match the obsinfo file
+    that obs_scm actually writes.  *service_file* is only used in warnings.
 
     Packaging obs_scm services (whose subdir matches _PACKAGING_SUBDIR_RE —
     either a literal path like root/.+/debian or the variable form
@@ -200,7 +209,7 @@ def _find_upstream_obs_scm_filename(service_file: Path) -> str | None:
     zero or more than one upstream obs_scm services are found.
     """
     upstream: list[ET.Element] = []
-    for svc in ET.parse(service_file).getroot().findall("service"):
+    for svc in svc_root.findall("service"):
         if svc.get("name") != "obs_scm":
             continue
         subdir_el = svc.find("param[@name='subdir']")
@@ -241,34 +250,37 @@ def _read_obsinfo_commit(workdir: Path, filename_prefix: str) -> str | None:
     return None
 
 
-def _cache_lookup(commit_hash: str) -> list[str] | None:
-    """Return cached artifact filenames for commit_hash, or None on miss."""
-    entry = _SVC_CACHE_DIR / commit_hash
+def _cache_entry_lookup(entry: Path) -> list[str] | None:
+    """Return the filenames cached under *entry*, or None on miss."""
     if not entry.is_dir():
         return None
     files = [f.name for f in sorted(entry.iterdir()) if f.is_file()]
     return files if files else None
 
 
-def _cache_store(commit_hash: str, workdir: Path, artifacts: list[str]) -> None:
-    """Atomically copy artifacts from workdir into the service cache."""
-    _SVC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(dir=_SVC_CACHE_DIR, prefix="_tmp-"))
+def _cache_entry_store(entry: Path, workdir: Path, filenames: list[str]) -> None:
+    """Atomically copy *filenames* from workdir into the cache entry *entry*.
+
+    Files are first copied to a temporary directory next to *entry* (same
+    filesystem) which is then renamed into place, so a concurrent reader
+    never sees a partial cache entry.
+    """
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=entry.parent, prefix="_tmp-"))
     try:
-        for name in artifacts:
+        for name in filenames:
             shutil.copy2(workdir / name, tmp / name)
-        final = _SVC_CACHE_DIR / commit_hash
-        if final.exists():
-            shutil.rmtree(final)
-        tmp.rename(final)
-        logger.debug(f"cached {len(artifacts)} manual artifact(s) under {final}")
+        if entry.exists():
+            shutil.rmtree(entry)
+        tmp.rename(entry)
+        logger.debug(f"cached {len(filenames)} file(s) under {entry}")
     except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
 
 
-def _obs_scm_cache_key(svc: ET.Element) -> str:
-    """Return a stable cache key for an obs_scm service element.
+def _service_params_cache_key(svc: ET.Element) -> str:
+    """Return a stable cache key for a service element (obs_scm, download_url).
 
     The key is the SHA256 of all sorted param name=value pairs, so any change
     to the service configuration (URL, revision, extract, versionformat, …)
@@ -455,33 +467,35 @@ def _git_tag_for_sha(url: str, sha: str) -> str | None:
         return None
 
 
-def _obs_scm_lookup(cache_key: str, head_sha: str) -> list[str] | None:
-    """Return cached obs_scm output filenames for (cache_key, head_sha), or None."""
-    entry = _OBS_SCM_CACHE_DIR / cache_key / head_sha
-    if not entry.is_dir():
+def _cargo_vendor_src_hash(svc: ET.Element, workdir: Path) -> str | None:
+    """Return the SHA256 of the cargo_vendor src archive(s) in *workdir*.
+
+    The ``src`` param may be a literal filename or a glob pattern; all
+    matching files are hashed (name + content) in sorted order.  Used as
+    the cache-invalidation key when the package has no upstream obs_scm
+    service (e.g. sources fetched via download_url), so that any change
+    to the source archive produces a different key.
+
+    Returns None if the src param is missing or matches no files.
+    """
+    src = next(
+        (
+            (p.text or "").strip()
+            for p in svc.findall("param")
+            if p.get("name") == "src"
+        ),
+        "",
+    )
+    if not src:
         return None
-    files = [f.name for f in sorted(entry.iterdir()) if f.is_file()]
-    return files if files else None
-
-
-def _obs_scm_store(
-    cache_key: str, head_sha: str, workdir: Path, filenames: list[str]
-) -> None:
-    """Atomically copy obs_scm output files from workdir into the obs_scm cache."""
-    key_dir = _OBS_SCM_CACHE_DIR / cache_key
-    key_dir.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(dir=key_dir, prefix="_tmp-"))
-    try:
-        for fname in filenames:
-            shutil.copy2(workdir / fname, tmp / fname)
-        final = key_dir / head_sha
-        if final.exists():
-            shutil.rmtree(final)
-        tmp.rename(final)
-        logger.debug(f"cached obs_scm output ({head_sha[:12]}) under {final}")
-    except Exception:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
+    files = [f for f in sorted(workdir.glob(src)) if f.is_file()]
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for f in files:
+        h.update(f.name.encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
 
 
 def _copy_file_with_macros(src: Path, dst: Path, macros: dict[str, str]) -> None:
@@ -621,6 +635,9 @@ def _run_local_services(
                 HEAD matches a cached run; on a hit the cached files are restored
                 and the obs_scm invocation is skipped entirely.  On a miss
                 obs_scm runs normally and its output is stored to the cache.
+                download_url services are cached by their service params alone
+                (the URL fully determines the content); on a hit the download
+                is skipped, on a miss the downloaded files are stored.
       Cache check — after Phase 1 the upstream source obsinfo is read for its
                     commit hash.  On a cache hit Phase 2 manual service outputs
                     are restored from cache.
@@ -630,7 +647,11 @@ def _run_local_services(
       Local packaging — debian/ and rpm/ files are copied from the local
                         package directory.
       Phase 3 — buildtime services (tar, recompress, set_version): always
-                run (fast, deterministic local transforms).
+                run (fast, deterministic local transforms).  Exception:
+                cargo_vendor output is cached, keyed on the service params
+                plus the upstream obs_scm commit (or the src archive hash
+                when there is no obs_scm), so an upstream commit change
+                invalidates the cache.
 
     Modes "serveronly" and "disabled" are skipped entirely.
     Each service binary is expected at /usr/lib/obs/service/<name>.  If a
@@ -762,13 +783,13 @@ def _run_local_services(
                 ),
                 "HEAD",
             )
-            obs_key = _obs_scm_cache_key(svc)
+            obs_key = _service_params_cache_key(svc)
             _print_pending(f"service obs_scm  {pkg_label}")
             head_sha = _git_head_sha(obs_url, obs_rev) if obs_url else None
             if head_sha:
-                cached_files = _obs_scm_lookup(obs_key, head_sha)
+                cache_entry = _OBS_SCM_CACHE_DIR / obs_key / head_sha
+                cached_files = _cache_entry_lookup(cache_entry)
                 if cached_files is not None:
-                    cache_entry = _OBS_SCM_CACHE_DIR / obs_key / head_sha
                     for fname in cached_files:
                         shutil.copy2(cache_entry / fname, workdir / fname)
                     _print_same(f"service obs_scm  {pkg_label}  (cached)")
@@ -781,9 +802,32 @@ def _run_local_services(
             generated = _run_one(svc)
             if head_sha and generated:
                 try:
-                    _obs_scm_store(obs_key, head_sha, workdir, generated)
+                    _cache_entry_store(
+                        _OBS_SCM_CACHE_DIR / obs_key / head_sha, workdir, generated
+                    )
                 except Exception as exc:
                     logger.warning(f"obs_scm cache store failed: {exc}")
+        elif cache and svc_name == "download_url":
+            # The service params (URL, filename, …) fully determine the
+            # downloaded content, so they alone are the cache key — no
+            # remote check is needed.
+            cache_entry = _DOWNLOAD_URL_CACHE_DIR / _service_params_cache_key(svc)
+            cached_files = _cache_entry_lookup(cache_entry)
+            if cached_files is not None:
+                for fname in cached_files:
+                    shutil.copy2(cache_entry / fname, workdir / fname)
+                _print_same(f"service download_url  {pkg_label}  (cached)")
+                logger.debug(
+                    f"download_url cache hit ({cache_entry.name[:12]}): "
+                    f"restored {len(cached_files)} file(s)"
+                )
+                continue
+            generated = _run_one(svc)
+            if generated:
+                try:
+                    _cache_entry_store(cache_entry, workdir, generated)
+                except Exception as exc:
+                    logger.warning(f"download_url cache store failed: {exc}")
         else:
             _run_one(svc)
 
@@ -794,11 +838,11 @@ def _run_local_services(
     commit_hash: str | None = None
     manual_artifacts: list[str] = []
     if cache:
-        upstream_filename = _find_upstream_obs_scm_filename(service_file)
+        upstream_filename = _find_upstream_obs_scm_filename(svc_root, service_file)
         if upstream_filename:
             commit_hash = _read_obsinfo_commit(workdir, upstream_filename)
             if commit_hash:
-                cached_names = _cache_lookup(commit_hash)
+                cached_names = _cache_entry_lookup(_SVC_CACHE_DIR / commit_hash)
                 if cached_names is not None:
                     for art_name in cached_names:
                         shutil.copy2(
@@ -822,7 +866,9 @@ def _run_local_services(
         # Cache manual artifacts only (vendor tarballs etc.).
         if cache and commit_hash and manual_artifacts:
             try:
-                _cache_store(commit_hash, workdir, manual_artifacts)
+                _cache_entry_store(
+                    _SVC_CACHE_DIR / commit_hash, workdir, manual_artifacts
+                )
             except Exception as exc:
                 logger.warning(f"cache store failed: {exc}")
 
@@ -858,8 +904,40 @@ def _run_local_services(
     _copy_local_packaging(obs_dir, workdir, pkg_label, macros=macros)
 
     # ── Phase 3: buildtime services (tar, recompress, set_version) ────────
-    # Always run — these are fast, deterministic local transforms.
+    # Always run — these are fast, deterministic local transforms.  The one
+    # exception is cargo_vendor, which downloads the full crate dependency
+    # tree from crates.io: its output is cached, keyed on the service params
+    # plus the upstream source identity (obs_scm commit hash when available,
+    # otherwise the SHA256 of the src archive itself), so any upstream commit
+    # or source change invalidates the cache.
     for svc in buildtime_svcs:
+        if cache and svc.get("name", "") == "cargo_vendor":
+            src_id = commit_hash or _cargo_vendor_src_hash(svc, workdir)
+            if src_id:
+                key_dir = _CARGO_VENDOR_CACHE_DIR / _service_params_cache_key(svc)
+                cache_entry = key_dir / src_id
+                cached_files = _cache_entry_lookup(cache_entry)
+                if cached_files is not None:
+                    for fname in cached_files:
+                        shutil.copy2(cache_entry / fname, workdir / fname)
+                    _print_same(f"service cargo_vendor  {pkg_label}  (cached)")
+                    logger.debug(
+                        f"cargo_vendor cache hit ({src_id[:12]}): "
+                        f"restored {len(cached_files)} file(s)"
+                    )
+                    continue
+                generated = _run_one(svc)
+                if generated:
+                    try:
+                        _cache_entry_store(cache_entry, workdir, generated)
+                        # Vendor tarballs are large; drop entries for other
+                        # (older) source revisions of this same service.
+                        for stale in key_dir.iterdir():
+                            if stale.is_dir() and stale.name != src_id:
+                                shutil.rmtree(stale, ignore_errors=True)
+                    except Exception as exc:
+                        logger.warning(f"cargo_vendor cache store failed: {exc}")
+                continue
         _run_one(svc)
 
     # ── Cleanup: remove intermediates that should not be uploaded ─────────
